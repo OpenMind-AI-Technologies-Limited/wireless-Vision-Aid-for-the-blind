@@ -88,20 +88,29 @@ def evaluate_remote_from_exchange(
     path_available: bool,
     config: GateConfig = GateConfig(),
     max_offset_uncertainty_s: float = 0.1,
+    max_exchange_age_s: float = 5.0,
+    clock_drift_ppm: float = 50.0,
 ) -> Decision:
-    """Compose independently authenticated timing evidence with the CEVG gate."""
+    """Compose authenticated timing bounds, including bounded clock drift."""
+    values = (receiver_decision_s, max_exchange_age_s, clock_drift_ppm)
+    if not all(math.isfinite(v) for v in values) or max_exchange_age_s <= 0 or clock_drift_ppm < 0:
+        return Decision("ABSTAIN", "invalid_sync_tolerances", None)
+    exchange_age_s = receiver_decision_s - exchange.receiver_reply_received_s
+    if not math.isfinite(exchange_age_s) or not 0 <= exchange_age_s <= max_exchange_age_s:
+        return Decision("ABSTAIN", "stale_clock_exchange", None)
     try:
         interval = infer_offset_interval(
             exchange, max_width_s=max_offset_uncertainty_s
         )
     except ValueError:
         return Decision("ABSTAIN", "unverified_clock_exchange", None)
+    drift_margin_s = exchange_age_s * clock_drift_ppm * 1e-6
     return remote_guidance_decision(
         CaptureProof(
             sender_capture_s=sender_capture_s,
             receiver_decision_s=receiver_decision_s,
-            offset_lower_s=interval.lower_s,
-            offset_upper_s=interval.upper_s,
+            offset_lower_s=interval.lower_s - drift_margin_s,
+            offset_upper_s=interval.upper_s + drift_margin_s,
             trusted_clock_mapping=True,
             authenticated_frame=frame_authenticated,
             matched_session_and_frame=frame_matched_to_exchange_session,
