@@ -39,8 +39,12 @@ def test_rejections(good, changes, reason):
     assert d.reason == reason
 
 
-def test_authenticated_remote_eligible(good):
-    assert evaluate(replace(good, origin="remote", authenticated=True)).action == "GUIDE"
+def test_authenticated_remote_without_capture_proof_abstains(good):
+    assert evaluate(replace(good, origin="remote", authenticated=True)).reason == "unverified_remote_capture_time"
+
+
+def test_authenticated_remote_with_capture_proof_eligible(good):
+    assert evaluate(replace(good, origin="remote", authenticated=True, capture_time_verified=True)).action == "GUIDE"
 
 
 def test_remote_capture_age_not_inferred(good):
