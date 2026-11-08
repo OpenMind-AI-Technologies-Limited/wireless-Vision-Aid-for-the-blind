@@ -87,3 +87,22 @@ currently replay original Flutter `GuidanceEngine` outputs, so results from
 confidence/auth/freshness baselines cannot be described as a head-to-head
 comparison against the fully deployed WVAB baseline. No empirical improvement
 is claimed by this branch.
+
+
+## Remote capture-time proof research module
+
+`core/remote_capture_proof.py` computes a **conservative upper bound** on
+camera capture age using an authenticated frame/session match and an externally
+verified clock-offset interval. The proof must originate from a trusted
+synchronization/transport adapter, **not** a user-supplied packet field or
+CSV label. This is a pure, executable model; ESP32 firmware does not yet emit
+trusted capture metadata and the receiver does not yet independently establish
+clock-offset intervals. Therefore remote frame freshness is **not currently
+proved by the production data path**.
+
+The offline replay CSV now includes `capture_time_verified`; this represents
+an externally validated label for analysis, not authentication by itself.
+
+Until a complete authenticated sender-timestamp, session/frame binding and
+clock synchronization path has been implemented, do not set remote
+`capture_time_verified=True` in production. The gate otherwise abstains.
