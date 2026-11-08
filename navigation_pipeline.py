@@ -14,6 +14,8 @@ from ultralytics import YOLO
 from core.config import load_config, validate_navigation_config
 from core.logger import setup_json_logger
 from core.safety import SafetyStatePublisher
+from core.evidence_gate import GateConfig
+from core.navigation_cevg_adapter import evaluate_local_navigation
 from mapping.occupancy_grid import OccupancyGrid
 from mapping.orbslam3_bridge import ORBSLAM3Bridge
 from mapping.slam import VisualOdometry
@@ -173,6 +175,13 @@ def main():
     last_frame_ok = time.time()
     last_metric_vo_scale = time.time()
     localization_stale_s = float(cfg["navigation"].get("localization_stale_s", 1.5))
+    cevg_enabled = _env_bool("WVAB_RESEARCH_CEVG_ENABLED", False)
+    cevg_config = GateConfig(
+        max_age_s=float(os.environ.get("WVAB_RESEARCH_CEVG_MAX_AGE_S", "0.5")),
+        min_confidence=float(os.environ.get("WVAB_RESEARCH_CEVG_MIN_CONFIDENCE", "0.5")),
+    ) if cevg_enabled else None
+    if cevg_enabled:
+        logger.warning("Experimental CEVG enabled: local receiver-observation age only; not camera capture age")
 
     try:
         while not stop_event.is_set():
@@ -184,6 +193,7 @@ def main():
                 stop_event.wait(0.1)
                 continue
             last_frame_ok = time.time()
+            frame_read_monotonic = time.monotonic()
 
             t0 = time.time()
             results = model(frame, verbose=False)
@@ -267,7 +277,26 @@ def main():
                 "localization_fresh": localization_fresh,
                 "map_metric": map_is_metric,
             }
-            if not path:
+            if cevg_config is not None and path:
+                cevg_decision = evaluate_local_navigation(
+                    frame_read_monotonic=frame_read_monotonic,
+                    decision_monotonic=time.monotonic(),
+                    detections=detections,
+                    camera_source=cam_cfg["source"],
+                    localization_fresh=localization_fresh,
+                    metric_calibrated=bool(map_is_metric and localization_is_metric),
+                    path_available=True,
+                    config=cevg_config,
+                )
+                state_metadata["cevg_reason"] = cevg_decision.reason
+                state_metadata["cevg_age_s"] = cevg_decision.age_s
+                if cevg_decision.action == "GUIDE":
+                    safety.guidance(path_points=len(path), **state_metadata)
+                else:
+                    safety.degraded(
+                        "cevg_abstention", path_points=len(path), **state_metadata
+                    )
+            elif not path:
                 safety.stop("path_not_found", **state_metadata)
             elif map_is_metric and localization_is_metric and localization_fresh:
                 safety.guidance(path_points=len(path), **state_metadata)
