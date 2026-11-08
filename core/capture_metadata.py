@@ -40,3 +40,21 @@ def decode_capture_metadata(
     if session_id != expected_session_id or frame_id != expected_frame_id:
         raise ValueError("capture metadata session/frame mismatch")
     return tick_us
+
+
+def extract_capture_envelope(
+    plaintext: bytes, *, expected_session_id: int, expected_frame_id: int
+) -> tuple[int, bytes]:
+    """Extract V3 sender uptime and image from already AEAD-verified frame.
+
+    Caller must authenticate every chunk of the assembled frame before calling
+    this function. Sender uptime is not receiver clock time.
+    """
+    if len(plaintext) <= CAPTURE_METADATA.size:
+        raise ValueError("capture envelope does not contain image bytes")
+    capture_tick_us = decode_capture_metadata(
+        plaintext[:CAPTURE_METADATA.size],
+        expected_session_id=expected_session_id,
+        expected_frame_id=expected_frame_id,
+    )
+    return capture_tick_us, plaintext[CAPTURE_METADATA.size:]
