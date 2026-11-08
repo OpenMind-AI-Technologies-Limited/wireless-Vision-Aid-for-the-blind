@@ -259,3 +259,10 @@ jobs:
 
       - name: Compile ESP32-CAM firmware
         run: arduino-cli compile --fqbn esp32:esp32:esp32:PSRAM=enabled build-sketch/esp32_cam_stream
+
+      - name: Compile experimental ESP32-CAM capture metadata mode
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32:PSRAM=enabled \
+            --build-property "compiler.cpp.extra_flags=-DWVAB_CAPTURE_METADATA_V3=1" \
+            build-sketch/esp32_cam_stream
