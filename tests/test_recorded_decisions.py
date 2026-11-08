@@ -45,3 +45,23 @@ def test_missing_label_fails_closed(tmp_path: Path):
                     "ground_truth_actionable": "0"}])
     with pytest.raises(ValueError, match="missing independent label"):
         evaluate_files(decisions, labels)
+
+
+def test_multiple_runs_produce_clustered_uncertainty(tmp_path: Path):
+    decisions, labels = tmp_path / "d.csv", tmp_path / "l.csv"
+    write(decisions, [
+        {"run_id": "independent_a", "frame_number": "1",
+         "existing_navigation_action": "GUIDE", "cevg_action": "ABSTAIN"},
+        {"run_id": "independent_b", "frame_number": "1",
+         "existing_navigation_action": "GUIDE", "cevg_action": "GUIDE"},
+    ])
+    write(labels, [
+        {"run_id": "independent_a", "frame_number": "1",
+         "ground_truth_actionable": "0"},
+        {"run_id": "independent_b", "frame_number": "1",
+         "ground_truth_actionable": "1"},
+    ])
+    result = evaluate_files(decisions, labels)
+    assert result["independent_run_count"] == 2
+    assert result["clustered_bootstrap"]["delta_unsupported_per_frame"] == -0.5
+    assert result["clustered_bootstrap"]["replicates"] == 2000
