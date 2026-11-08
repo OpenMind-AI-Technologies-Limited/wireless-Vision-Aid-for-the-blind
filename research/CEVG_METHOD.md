@@ -43,3 +43,47 @@ and applies only to the local-camera navigation path. Do not interpret
 `observed_at_monotonic` as a camera-exposure timestamp. Without an independent
 dataset and independent ground truth, a synthetic oracle that uses the same
 gating conditions can demonstrate consistency but **cannot prove superiority**.
+
+
+## Opt-in navigation integration
+
+The navigation pipeline uses the original behavior unless
+`WVAB_RESEARCH_CEVG_ENABLED=1` is explicitly configured.
+
+For an isolated local USB-camera experimental run:
+
+```bash
+WVAB_RESEARCH_CEVG_ENABLED=1 \
+WVAB_RESEARCH_CEVG_MAX_AGE_S=0.5 \
+WVAB_RESEARCH_CEVG_MIN_CONFIDENCE=0.5 \
+python navigation_pipeline.py
+```
+
+The camera source in `config/config.yaml` must be an integer OpenCV device
+index for this adapter. URL sources are **not** granted remote authentication
+by implication and will yield `DEGRADED` for existing planned paths. The
+integration measures age from the Python `cap.read()` completion to the
+decision; it does not measure camera exposure age or audio delivery latency.
+Zero detections are conservatively classified as abstention: this may increase
+false abstention on clear scenes and is an experimental limitation, not evidence
+of improved navigational safety.
+
+The existing `STOP` path for no camera, no localization or no path is retained.
+A CEVG failure with an otherwise available path yields `DEGRADED` with a
+`cevg_reason` field, not a motor-stop command. No production users should
+enable this setting until real hardware and user-impact testing is complete.
+
+## Labeled trace comparison
+
+```bash
+python -m research.replay_comparison path/to/independently-labeled.csv \
+  --max-age-s 0.5 --min-confidence 0.5 --out research-result.json
+```
+
+A trace must include columns described in `research/replay_comparison.py`.
+The ground-truth label must be created independently of the eligibility
+conditions; otherwise evaluation is circular. The comparison tool does not
+currently replay original Flutter `GuidanceEngine` outputs, so results from
+confidence/auth/freshness baselines cannot be described as a head-to-head
+comparison against the fully deployed WVAB baseline. No empirical improvement
+is claimed by this branch.
