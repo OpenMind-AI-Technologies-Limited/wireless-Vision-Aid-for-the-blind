@@ -4,6 +4,7 @@
 #include <WiFiUdp.h>
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "mbedtls/gcm.h"
 
 #if __has_include("esp32_secrets.h")
@@ -26,6 +27,13 @@
 #define WIFI_POWER_SAVE true
 #define WIFI_RECONNECT_INTERVAL_MS 5000
 #define AUTH_REFRESH_INTERVAL_MS 10000
+
+// Experimental research framing; off for compatibility with deployed v2.
+#ifndef WVAB_CAPTURE_METADATA_V3
+#define WVAB_CAPTURE_METADATA_V3 0
+#endif
+const uint16_t CAPTURE_METADATA_BYTES = 21;  // WVC3 + version + session + frame + tick
+
 
 const uint16_t MAX_UDP_PAYLOAD = 1450;
 const uint16_t HEADER_SIZE = 14;
@@ -228,11 +236,12 @@ static bool send_auth_packet() {
   return true;
 }
 
-static bool send_udp_frame(camera_fb_t* fb) {
+static bool send_udp_frame(camera_fb_t* fb, uint64_t capture_tick_us) {
   if (!fb || !fb->buf || fb->len == 0 || session_id == 0) return false;
 
   const uint16_t max_plain = MAX_UDP_PAYLOAD - HEADER_SIZE - NONCE_SIZE - TAG_SIZE;
-  const size_t chunk_count = (fb->len + max_plain - 1) / max_plain;
+  const size_t frame_plain_bytes = fb->len + (WVAB_CAPTURE_METADATA_V3 ? CAPTURE_METADATA_BYTES : 0);
+  const size_t chunk_count = (frame_plain_bytes + max_plain - 1) / max_plain;
   if (chunk_count == 0 || chunk_count > MAX_FRAME_CHUNKS) {
     Serial.printf("Dropping oversized frame: %u bytes, %u chunks\n",
                   static_cast<unsigned int>(fb->len),
@@ -244,17 +253,35 @@ static bool send_udp_frame(camera_fb_t* fb) {
   uint8_t base_nonce[NONCE_SIZE];
   esp_fill_random(base_nonce, sizeof(base_nonce));
   uint8_t ciphertext[MAX_UDP_PAYLOAD];
+  uint8_t first_chunk_plain[MAX_UDP_PAYLOAD];
 
   mbedtls_gcm_context ctx;
   if (!init_gcm(&ctx)) return false;
   bool success = true;
 
   for (uint16_t chunk_index = 0; chunk_index < total_chunks; ++chunk_index) {
-    const size_t start = static_cast<size_t>(chunk_index) * max_plain;
-    size_t end = start + max_plain;
+    const bool metadata_chunk = WVAB_CAPTURE_METADATA_V3 && chunk_index == 0;
+    const size_t meta_offset = WVAB_CAPTURE_METADATA_V3 ? CAPTURE_METADATA_BYTES : 0;
+    const size_t start = chunk_index == 0 ? 0 : static_cast<size_t>(chunk_index) * max_plain - meta_offset;
+    const size_t frame_budget = max_plain - (metadata_chunk ? CAPTURE_METADATA_BYTES : 0);
+    size_t end = start + frame_budget;
     if (end > fb->len) end = fb->len;
-    const uint16_t plain_len = static_cast<uint16_t>(end - start);
+    const size_t image_bytes = end - start;
+    const uint16_t plain_len = static_cast<uint16_t>(image_bytes + (metadata_chunk ? CAPTURE_METADATA_BYTES : 0));
     const uint16_t payload_len = static_cast<uint16_t>(NONCE_SIZE + TAG_SIZE + plain_len);
+    const uint8_t* plaintext = fb->buf + start;
+    if (metadata_chunk) {
+      first_chunk_plain[0] = 'W';
+      first_chunk_plain[1] = 'V';
+      first_chunk_plain[2] = 'C';
+      first_chunk_plain[3] = '3';
+      first_chunk_plain[4] = 1;
+      write_u32(first_chunk_plain + 5, session_id);
+      write_u32(first_chunk_plain + 9, frame_id);
+      write_u64(first_chunk_plain + 13, capture_tick_us);
+      memcpy(first_chunk_plain + CAPTURE_METADATA_BYTES, fb->buf, image_bytes);
+      plaintext = first_chunk_plain;
+    }
 
     uint8_t header[HEADER_SIZE];
     build_header(header, session_id, frame_id, total_chunks, chunk_index, payload_len);
@@ -270,7 +297,7 @@ static bool send_udp_frame(camera_fb_t* fb) {
         NONCE_SIZE,
         header,
         HEADER_SIZE,
-        fb->buf + start,
+        plaintext,
         ciphertext,
         TAG_SIZE,
         tag);
@@ -435,6 +462,7 @@ void loop() {
     return;
   }
 
-  if (!send_udp_frame(fb)) Serial.println("UDP frame send failed");
+  const uint64_t capture_tick_us = static_cast<uint64_t>(esp_timer_get_time());
+  if (!send_udp_frame(fb, capture_tick_us)) Serial.println("UDP frame send failed");
   esp_camera_fb_return(fb);
 }
