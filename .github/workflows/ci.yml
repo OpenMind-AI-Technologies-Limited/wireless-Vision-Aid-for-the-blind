@@ -63,6 +63,7 @@ jobs:
               "core/remote_capture_proof.py",
               "core/decision_recorder.py",
               "core/capture_metadata.py",
+              "core/clock_offset_bounds.py",
               "core/udp_capture_trace.py",
               "core/udp_protocol.py",
               "core/udp_runtime.py",
