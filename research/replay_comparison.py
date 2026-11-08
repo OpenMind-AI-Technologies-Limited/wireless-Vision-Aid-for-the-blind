@@ -2,7 +2,7 @@
 
 CSV schema:
 observed_at_monotonic,evaluated_at_monotonic,confidence,origin,authenticated,
-localization_fresh,metric_calibrated,path_available,ground_truth_actionable
+capture_time_verified,localization_fresh,metric_calibrated,path_available,ground_truth_actionable
 
 ground_truth_actionable MUST be independently labeled, not constructed from
 the CEVG gates. This executable compares decisions; it does not infer safety
@@ -18,7 +18,7 @@ from core.evidence_gate import Evidence, GateConfig, evaluate
 
 FIELDS = (
     "observed_at_monotonic", "evaluated_at_monotonic", "confidence",
-    "origin", "authenticated", "localization_fresh",
+    "origin", "authenticated", "capture_time_verified", "localization_fresh",
     "metric_calibrated", "path_available", "ground_truth_actionable",
 )
 
@@ -43,6 +43,7 @@ def load_rows(path: Path):
                 confidence=float(row["confidence"]),
                 origin=row["origin"],
                 authenticated=as_bool(row["authenticated"]),
+                capture_time_verified=as_bool(row["capture_time_verified"]),
                 localization_fresh=as_bool(row["localization_fresh"]),
                 metric_calibrated=as_bool(row["metric_calibrated"]),
                 path_available=as_bool(row["path_available"]),
@@ -108,6 +109,7 @@ def main():
     args = parser.parse_args()
     report = {
         "evidence": "externally_labeled_trace_not_automatically_verified",
+        "warning": "capture_time_verified must be independently established by a verified transport and clock-mapping adapter; CSV values alone are not cryptographic evidence",
         "source_file": str(args.trace),
         "policies": metrics(
             load_rows(args.trace),
