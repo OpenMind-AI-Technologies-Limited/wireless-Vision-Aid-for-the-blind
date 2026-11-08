@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import math
 
 from core.evidence_gate import Decision, Evidence, GateConfig, evaluate
+from core.clock_offset_bounds import FourTimestampExchange, infer_offset_interval
 
 
 @dataclass(frozen=True)
@@ -71,4 +72,44 @@ def remote_guidance_decision(
             metric_calibrated=metric_calibrated,
             path_available=path_available,
         ), config,
+    )
+
+
+def evaluate_remote_from_exchange(
+    *,
+    sender_capture_s: float,
+    receiver_decision_s: float,
+    exchange: FourTimestampExchange,
+    frame_authenticated: bool,
+    frame_matched_to_exchange_session: bool,
+    confidence: float,
+    localization_fresh: bool,
+    metric_calibrated: bool,
+    path_available: bool,
+    config: GateConfig = GateConfig(),
+    max_offset_uncertainty_s: float = 0.1,
+) -> Decision:
+    """Compose independently authenticated timing evidence with the CEVG gate."""
+    try:
+        interval = infer_offset_interval(
+            exchange, max_width_s=max_offset_uncertainty_s
+        )
+    except ValueError:
+        return Decision("ABSTAIN", "unverified_clock_exchange", None)
+    return remote_guidance_decision(
+        CaptureProof(
+            sender_capture_s=sender_capture_s,
+            receiver_decision_s=receiver_decision_s,
+            offset_lower_s=interval.lower_s,
+            offset_upper_s=interval.upper_s,
+            trusted_clock_mapping=True,
+            authenticated_frame=frame_authenticated,
+            matched_session_and_frame=frame_matched_to_exchange_session,
+        ),
+        confidence=confidence,
+        localization_fresh=localization_fresh,
+        metric_calibrated=metric_calibrated,
+        path_available=path_available,
+        config=config,
+        max_offset_uncertainty_s=max_offset_uncertainty_s,
     )
