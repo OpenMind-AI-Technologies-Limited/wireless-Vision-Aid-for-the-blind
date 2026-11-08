@@ -40,12 +40,12 @@ def test_sender_ids_are_bounded():
 
 
 def test_authenticated_envelope_extraction():
-    payload = encode_capture_metadata(7, 8, 15000) + b"\\xff\\xd8\\xff\\xd9"
+    payload = encode_capture_metadata(7, 8, 15000) + bytes.fromhex("ffd8ffd9")
     tick, image_bytes = extract_capture_envelope(
         payload, expected_session_id=7, expected_frame_id=8
     )
     assert tick == 15000
-    assert image_bytes == b"\\xff\\xd8\\xff\\xd9"
+    assert image_bytes == bytes.fromhex("ffd8ffd9")
 
 
 def test_metadata_only_is_rejected():
