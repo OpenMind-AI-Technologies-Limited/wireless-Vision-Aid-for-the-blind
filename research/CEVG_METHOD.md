@@ -106,3 +106,45 @@ an externally validated label for analysis, not authentication by itself.
 Until a complete authenticated sender-timestamp, session/frame binding and
 clock synchronization path has been implemented, do not set remote
 `capture_time_verified=True` in production. The gate otherwise abstains.
+
+
+## Real local navigation decision capture (no fabricated observations)
+
+The opt-in receiver-side research recorder saves one row per processed local
+frame, including both the existing navigation policy decision and the
+experimental CEVG decision. It does **not** store camera images, location, object
+names, secrets, or any independent ground truth.
+
+```bash
+export WVAB_RESEARCH_CEVG_ENABLED=1
+export WVAB_RESEARCH_TRACE_PATH="evidence/local-decision-run.csv"
+export WVAB_RESEARCH_RUN_ID="trial_001"
+python navigation_pipeline.py
+```
+
+Trace rows contain receiver-side frame age, maximum detector score,
+calibration/localization booleans, path existence and the policy decisions.
+The output is suitable for diagnostic **paired comparison**, not yet for
+validating false-positive guidance. Independently annotated ground-truth hazard
+and capture-time evidence are still required to establish accuracy.
+
+The offline replay module now includes `existing_navigation` as a baseline
+that matches the published navigation state gate for path existence, calibrated
+metric map, metric localization, and localization freshness. It does **not**
+emulate the entire audio or Flutter guidance engine. Report both unsupported
+guidance and valid-guidance recall, not only abstention counts.
+
+## Release gates before calling the article experimentally validated
+
+1. Record the exact source commit, hardware, model checksum, camera calibration,
+   firmware, network environment, and protocol revision.
+2. Establish capture-to-decision timing with authenticated per-frame metadata
+   and a verified offset-uncertainty interval, or mark capture age unknown.
+3. Collect timestamped physical camera/radio traces with reproducible fault
+   injection, plus independent annotations or a documented ground-truth oracle.
+4. Compare the existing navigation output and the proposed policy on identical
+   traces. Include valid-guidance retention, unsupported-issued fraction,
+   abstention, workload/latency and paired uncertainty intervals.
+5. Test with human participants only under an appropriate ethical and
+   accessibility review protocol. Do not claim medical or mobility safety based
+   on unit tests.
