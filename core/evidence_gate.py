@@ -22,6 +22,7 @@ class Evidence:
     confidence: float
     origin: Origin
     authenticated: bool = False
+    capture_time_verified: bool = False
     localization_fresh: bool = False
     metric_calibrated: bool = False
     path_available: bool = False
@@ -62,6 +63,8 @@ def evaluate(e: Evidence, config: GateConfig = GateConfig()) -> Decision:
         return Decision("ABSTAIN", "untrusted_origin", age)
     if e.origin == "remote" and not e.authenticated:
         return Decision("ABSTAIN", "unauthenticated_remote_frame", age)
+    if e.origin == "remote" and not e.capture_time_verified:
+        return Decision("ABSTAIN", "unverified_remote_capture_time", age)
     if age > config.max_age_s:
         return Decision("ABSTAIN", "stale_observation", age)
     if not math.isfinite(e.confidence) or not 0 <= e.confidence <= 1:
