@@ -26,6 +26,7 @@ import time
 from core.font_paths import overlay_font_candidates
 from core.proximity import classify_bbox_proximity
 from core.capture_metadata import extract_capture_envelope
+from core.udp_capture_trace import write_capture_trace
 from core.security import normalize_control_host, resolve_control_token, verify_secret
 from core.udp_protocol import (
     AUTH_FRAME_ID,
@@ -332,6 +333,7 @@ class UDPVisionServer:
         # independently synchronized receiver capture-time estimates.
         self.capture_metadata_v3 = _bool_env("WVAB_RESEARCH_CAPTURE_METADATA_V3", "0")
         self.last_capture_tick_us = None
+        self.capture_trace_path = os.environ.get("WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH", "").strip()
 
         self.model = YOLO(ensure_local_model(model_path, offline=OFFLINE_MODE))
         self.language = (language or "en").strip().lower()
@@ -933,6 +935,7 @@ class UDPVisionServer:
                             continue
 
                         frame_buffers.pop(key, None)
+                        sender_tick_us = None
                         if self.capture_metadata_v3:
                             try:
                                 sender_tick_us, data = extract_capture_envelope(
@@ -960,8 +963,24 @@ class UDPVisionServer:
                         )
                         if frame is None:
                             continue
+
                         self.last_frame_mono = time.monotonic()
+                        decode_completed_mono = self.last_frame_mono
                         processed = self._process_frame(frame)
+                        if sender_tick_us is not None and self.capture_trace_path:
+                            try:
+                                write_capture_trace(
+                                    self.capture_trace_path,
+                                    session_id=session_id,
+                                    frame_id=frame_id,
+                                    sender_capture_uptime_us=sender_tick_us,
+                                    receiver_decode_monotonic_s=decode_completed_mono,
+                                    receiver_processing_end_monotonic_s=time.monotonic(),
+                                )
+                            except OSError as exc:
+                                self.logger.warning(
+                                    "Remote capture trace unavailable: %s", type(exc).__name__
+                                )
                         self.frame_count += 1
                         now = time.monotonic()
                         recent_frame_times.append(now)
