@@ -154,3 +154,22 @@ still required. No field hardware trial has been performed as part of this
 source change. The metadata framing has compilation/codec test coverage, but
 the new V3 firmware path requires real-device end-to-end validation before
 being described as ready for assistive use.
+
+
+## Clock-bound analysis
+
+`core/clock_offset_bounds.py` derives a conservative receiver-minus-sender
+offset interval from a **verified** four-timestamp request/reply exchange:
+`[R1-S2, R4-S3]`, assuming nonnegative one-way network delays. The exchange
+must be authenticated and linked to the same session/nonce. The composed
+remote proof additionally rejects expired exchanges and widens offset bounds
+for a configured maximum oscillator drift (default 50 ppm). The default
+sync age budget is 5 seconds. These are **research configuration assumptions**,
+not empirically calibrated ESP32 clock parameters.
+
+The current firmware does **not** implement that authenticated challenge/response
+synchronization protocol; adding an authenticated sender tick inside frames
+does not satisfy the offset-verification prerequisite. Until that handshake
+is implemented and characterized on hardware, remote guidance remains
+fail-closed under the full proof model. Do not claim validated
+capture-to-guidance timing from the raw timestamp CSV.
