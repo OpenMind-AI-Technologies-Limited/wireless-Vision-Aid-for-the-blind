@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from research.paired_statistics import paired_failure_discordance, wilson_95
+from research.cluster_bootstrap import paired_cluster_bootstrap
 
 
 def _read_csv(path: Path, required: set[str]):
@@ -41,6 +42,7 @@ def evaluate_files(decisions_path: Path, labels_path: Path) -> dict:
         labels[key] = _binary(row["ground_truth_actionable"])
 
     combined = []
+    clustered = []
     used = set()
     for row in _read_csv(decisions_path, {
         "run_id", "frame_number", "existing_navigation_action", "cevg_action",
@@ -60,6 +62,7 @@ def evaluate_files(decisions_path: Path, labels_path: Path) -> dict:
             row["existing_navigation_action"] == "GUIDE",
             row["cevg_action"] == "GUIDE",
         ))
+        clustered.append((row["run_id"], *combined[-1]))
     if not combined or used != set(labels):
         raise ValueError("empty or mismatched decision and label sets")
 
@@ -84,8 +87,12 @@ def evaluate_files(decisions_path: Path, labels_path: Path) -> dict:
             "valid_guidance_recall_wilson95": wilson_95(tp, tp + fn),
         }
 
+    cluster_count = len({record[0] for record in clustered})
+    clustered_report = paired_cluster_bootstrap(clustered) if cluster_count >= 2 else None
     return {
         "n": len(combined),
+        "independent_run_count": cluster_count,
+        "clustered_bootstrap": clustered_report,
         "existing_navigation": summarize(0),
         "cevg": summarize(1),
         "paired_unsupported": paired_failure_discordance(combined),
