@@ -99,3 +99,33 @@ Preserve existing release fail-closed safeguards.
 
 Do not describe this protocol as an executed study or produce numerical
 physical results until the underlying evidence is captured.
+
+
+## Reproducible evaluation of actually emitted local decisions
+
+Collect local receiver-side rows using `WVAB_RESEARCH_TRACE_PATH` as documented
+in `research/CEVG_METHOD.md`. Independently prepare a separate file with:
+
+```csv
+run_id,frame_number,ground_truth_actionable
+trial_001,1,1
+trial_001,2,0
+```
+
+The above lines show **schema only**, not real trial labels or results.
+Annotations must be created from independent evidence and aligned by
+`(run_id, frame_number)`. Then run:
+
+```bash
+python -m research.evaluate_recorded_decisions \
+  --decisions evidence/local-decision-run.csv \
+  --labels evidence/independent-annotations.csv \
+  --output evidence/paired-evaluation.json
+```
+
+This script rejects missing/duplicate/mismatched frame labels and outputs
+confusion matrices and paired unsupported-guidance counts for recorded
+existing-WVAB versus CEVG decisions. It does not verify whether a left/right
+instruction was correct, nor does it verify audio delivery; both need
+additional independently labeled outputs before making directional-accuracy
+or user-outcome claims.
