@@ -25,7 +25,7 @@ import time
 
 from core.font_paths import overlay_font_candidates
 from core.proximity import classify_bbox_proximity
-from core.capture_metadata import CAPTURE_METADATA, decode_capture_metadata
+from core.capture_metadata import extract_capture_envelope
 from core.security import normalize_control_host, resolve_control_token, verify_secret
 from core.udp_protocol import (
     AUTH_FRAME_ID,
@@ -934,19 +934,16 @@ class UDPVisionServer:
 
                         frame_buffers.pop(key, None)
                         if self.capture_metadata_v3:
-                            if len(data) <= CAPTURE_METADATA.size:
-                                continue
                             try:
-                                sender_tick_us = decode_capture_metadata(
-                                    data[:CAPTURE_METADATA.size],
+                                sender_tick_us, data = extract_capture_envelope(
+                                    data,
                                     expected_session_id=session_id,
                                     expected_frame_id=frame_id,
                                 )
                             except ValueError:
                                 continue
-                            # This is capture-acquisition completion uptime
-                            # from the authenticated sender, NOT capture age.
-                            data = data[CAPTURE_METADATA.size:]
+                            # Sender uptime is authenticated frame metadata,
+                            # NOT a synchronized end-to-end freshness proof.
                             self.last_capture_tick_us = sender_tick_us
                         self.last_completed_frame[replay_key] = frame_id
                         for stale_key in list(frame_buffers):
