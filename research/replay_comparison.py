@@ -53,6 +53,11 @@ def load_rows(path: Path):
 
 def decide_baseline(name: str, evidence: Evidence, cfg: GateConfig) -> bool:
     confidence_ok = evidence.confidence >= cfg.min_confidence
+    if name == "existing_navigation":
+        # Mirrors navigation_pipeline.py: a path plus metric geometry and
+        # fresh localization makes guidance available (independent of score).
+        return (evidence.path_available and evidence.metric_calibrated
+                and evidence.localization_fresh)
     if name == "confidence":
         return confidence_ok
     if name == "auth_confidence":
@@ -74,7 +79,7 @@ def metrics(rows, cfg: GateConfig):
     if not observations:
         raise ValueError("empty trace")
     output = {}
-    for name in ("confidence", "auth_confidence", "freshness_confidence", "cevg"):
+    for name in ("existing_navigation", "confidence", "auth_confidence", "freshness_confidence", "cevg"):
         tp = fp = tn = fn = 0
         for evidence, truth in observations:
             predicted = decide_baseline(name, evidence, cfg)
@@ -94,6 +99,9 @@ def metrics(rows, cfg: GateConfig):
             "tn": tn,
             "fn": fn,
             "unsupported_issued_fraction": fp / (tp + fp) if tp + fp else None,
+            "unsupported_fraction_of_all_cases": fp / total,
+            "false_abstention_fraction_of_all_cases": fn / total,
+            "guidance_fraction": (tp + fp) / total,
             "valid_guidance_recall": tp / (tp + fn) if tp + fn else None,
             "abstention_fraction": (tn + fn) / total,
         }
