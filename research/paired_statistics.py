@@ -20,7 +20,9 @@ def wilson_95(successes: int, trials: int) -> tuple[float, float] | None:
     den = 1 + zz / trials
     ctr = (p + zz / (2 * trials)) / den
     mar = z * math.sqrt(p * (1 - p) / trials + zz / (4 * trials * trials)) / den
-    return max(0.0, ctr - mar), min(1.0, ctr + mar)
+    lower = 0.0 if successes == 0 else max(0.0, ctr - mar)
+    upper = 1.0 if successes == trials else min(1.0, ctr + mar)
+    return lower, upper
 
 
 def paired_failure_discordance(
