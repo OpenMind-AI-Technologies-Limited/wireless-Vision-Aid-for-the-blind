@@ -10,6 +10,7 @@ def sample(confidence=0.8, age=0.2, auth=True, calibrated=True):
         confidence=confidence,
         origin="remote",
         authenticated=auth,
+        capture_time_verified=True,
         localization_fresh=True,
         metric_calibrated=calibrated,
         path_available=True,
@@ -36,3 +37,11 @@ def test_independent_labels_create_false_positive_and_false_negative():
 def test_no_ground_truth_positive_returns_null_recall():
     report = metrics([(sample(auth=False), False)], GateConfig())
     assert report["cevg"]["valid_guidance_recall"] is None
+
+
+def test_unverified_remote_capture_time_abstains_even_with_auth():
+    row = sample()
+    from dataclasses import replace
+    report = metrics([(replace(row, capture_time_verified=False), True)], GateConfig())
+    assert report["cevg"]["fn"] == 1
+    assert report["cevg"]["tp"] == 0
