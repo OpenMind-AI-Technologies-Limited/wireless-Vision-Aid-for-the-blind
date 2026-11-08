@@ -2,7 +2,7 @@ from pathlib import Path
 import csv
 import pytest
 
-from research.decision_recorder import FIELDNAMES, write_decision
+from core.decision_recorder import FIELDNAMES, write_decision
 
 
 def test_recorder_excludes_unapproved_fields(tmp_path: Path):
