@@ -129,3 +129,28 @@ existing-WVAB versus CEVG decisions. It does not verify whether a left/right
 instruction was correct, nor does it verify audio delivery; both need
 additional independently labeled outputs before making directional-accuracy
 or user-outcome claims.
+
+
+## Opt-in authenticated ESP32 frame capture-tick transport
+
+The firmware now supports research-only packet content framing using
+`WVAB_CAPTURE_METADATA_V3=1` at compile time. The server must have
+`WVAB_RESEARCH_CAPTURE_METADATA_V3=1`; the two flags must be matched.
+Both are **off by default** for v2 compatibility. V3 prepends exactly 21
+bytes inside the AES-GCM-protected reassembled frame plaintext:
+magic `WVC3`, version, sender session ID, frame ID and 64-bit capture-completion
+uptime (microseconds). It increases the wire overhead and changes chunk
+boundaries. The Python receiver verifies the embedded session/frame IDs after
+GCM authentication and strips the metadata before JPEG decoding. An
+incompatible sender is rejected, not silently interpreted as V3.
+
+Research telemetry may be enabled with
+`WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH=evidence/esp32_capture.csv`.
+It records the authenticated sender's capture-completion uptime and receiver
+decode/processing monotonic timestamps. **These clocks are different**:
+subtracting them does not give capture-to-decision latency. An authenticated
+offset-bound synchronization procedure and frame-to-guidance binding are
+still required. No field hardware trial has been performed as part of this
+source change. The metadata framing has compilation/codec test coverage, but
+the new V3 firmware path requires real-device end-to-end validation before
+being described as ready for assistive use.
