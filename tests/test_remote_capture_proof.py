@@ -51,3 +51,42 @@ def test_future_capture_interval_rejected():
 
 def test_invalid_interval_rejected():
     assert check(replace(valid(), offset_lower_s=5.2)).reason == "invalid_offset_interval"
+
+
+def test_authenticated_four_timestamp_exchange_can_bound_capture_age():
+    from core.clock_offset_bounds import FourTimestampExchange
+    from core.remote_capture_proof import evaluate_remote_from_exchange
+
+    exchange = FourTimestampExchange(
+        receiver_request_s=15.0, sender_received_s=10.02,
+        sender_replied_s=10.03, receiver_reply_received_s=15.05,
+        authenticated_exchange=True, same_nonce_and_session=True,
+    )
+    decision = evaluate_remote_from_exchange(
+        sender_capture_s=10.1, receiver_decision_s=15.3,
+        exchange=exchange, frame_authenticated=True,
+        frame_matched_to_exchange_session=True,
+        confidence=0.9, localization_fresh=True,
+        metric_calibrated=True, path_available=True,
+    )
+    assert decision.action == "GUIDE"
+
+
+def test_remote_exchange_uncertainty_abstains():
+    from dataclasses import replace
+    from core.clock_offset_bounds import FourTimestampExchange
+    from core.remote_capture_proof import evaluate_remote_from_exchange
+
+    exchange = FourTimestampExchange(
+        receiver_request_s=15.0, sender_received_s=10.02,
+        sender_replied_s=10.03, receiver_reply_received_s=15.5,
+        authenticated_exchange=True, same_nonce_and_session=True,
+    )
+    result = evaluate_remote_from_exchange(
+        sender_capture_s=10.1, receiver_decision_s=15.8,
+        exchange=exchange, frame_authenticated=True,
+        frame_matched_to_exchange_session=True, confidence=0.9,
+        localization_fresh=True, metric_calibrated=True,
+        path_available=True,
+    )
+    assert result.reason == "unverified_clock_exchange"
