@@ -15,6 +15,7 @@ import csv
 import json
 from pathlib import Path
 from core.evidence_gate import Evidence, GateConfig, evaluate
+from research.paired_statistics import paired_failure_discordance, wilson_95
 
 FIELDS = (
     "observed_at_monotonic", "evaluated_at_monotonic", "confidence",
@@ -102,10 +103,24 @@ def metrics(rows, cfg: GateConfig):
             "unsupported_fraction_of_all_cases": fp / total,
             "false_abstention_fraction_of_all_cases": fn / total,
             "guidance_fraction": (tp + fp) / total,
+            "unsupported_issued_wilson95": wilson_95(fp, tp + fp),
+            "valid_guidance_recall_wilson95": wilson_95(tp, tp + fn),
             "valid_guidance_recall": tp / (tp + fn) if tp + fn else None,
             "abstention_fraction": (tn + fn) / total,
         }
     return output
+
+
+def paired_report(rows, cfg: GateConfig):
+    observations = list(rows)
+    return paired_failure_discordance([
+        (
+            truth,
+            decide_baseline("existing_navigation", evidence, cfg),
+            decide_baseline("cevg", evidence, cfg),
+        )
+        for evidence, truth in observations
+    ])
 
 
 def main():
@@ -115,12 +130,15 @@ def main():
     parser.add_argument("--min-confidence", type=float, default=0.5)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+    observations = list(load_rows(args.trace))
     report = {
         "evidence": "externally_labeled_trace_not_automatically_verified",
         "warning": "capture_time_verified must be independently established by a verified transport and clock-mapping adapter; CSV values alone are not cryptographic evidence",
         "source_file": str(args.trace),
+        "paired_existing_vs_cevg": paired_report(observations, GateConfig(max_age_s=args.max_age_s, min_confidence=args.min_confidence)),
+        "statistical_note": "Wilson intervals assume independent frames and are descriptive only; video correlation requires cluster/run-level uncertainty analysis",
         "policies": metrics(
-            load_rows(args.trace),
+            observations,
             GateConfig(max_age_s=args.max_age_s, min_confidence=args.min_confidence),
         ),
     }
