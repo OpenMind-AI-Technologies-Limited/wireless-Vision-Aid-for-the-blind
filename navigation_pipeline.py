@@ -16,7 +16,7 @@ from core.logger import setup_json_logger
 from core.safety import SafetyStatePublisher
 from core.evidence_gate import GateConfig
 from core.navigation_cevg_adapter import evaluate_local_navigation
-from research.decision_recorder import write_decision
+from core.decision_recorder import write_decision
 from mapping.occupancy_grid import OccupancyGrid
 from mapping.orbslam3_bridge import ORBSLAM3Bridge
 from mapping.slam import VisualOdometry
