@@ -62,6 +62,7 @@ jobs:
               "core/navigation_cevg_adapter.py",
               "core/remote_capture_proof.py",
               "core/decision_recorder.py",
+              "core/capture_metadata.py",
               "core/udp_protocol.py",
               "core/udp_runtime.py",
               "mapping/occupancy_grid.py",
