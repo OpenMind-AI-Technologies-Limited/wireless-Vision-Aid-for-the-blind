@@ -45,3 +45,19 @@ def test_unverified_remote_capture_time_abstains_even_with_auth():
     report = metrics([(replace(row, capture_time_verified=False), True)], GateConfig())
     assert report["cevg"]["fn"] == 1
     assert report["cevg"]["tp"] == 0
+
+
+def test_existing_navigation_baseline_matches_deployment_policy():
+    rows = [
+        (sample(confidence=0.1), True),
+        (sample(calibrated=False), False),
+        (sample(age=3.0), False),
+    ]
+    report = metrics(rows, GateConfig())
+    # Existing navigation policy ignores frame age and detector confidence.
+    assert report["existing_navigation"]["tp"] == 1
+    assert report["existing_navigation"]["fp"] == 1
+    assert report["existing_navigation"]["tn"] == 1
+    assert report["existing_navigation"]["fn"] == 0
+    assert report["existing_navigation"]["unsupported_fraction_of_all_cases"] == 1 / 3
+    assert report["cevg"]["fn"] == 1
