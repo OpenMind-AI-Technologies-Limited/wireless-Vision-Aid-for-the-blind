@@ -167,9 +167,58 @@ for a configured maximum oscillator drift (default 50 ppm). The default
 sync age budget is 5 seconds. These are **research configuration assumptions**,
 not empirically calibrated ESP32 clock parameters.
 
-The current firmware does **not** implement that authenticated challenge/response
-synchronization protocol; adding an authenticated sender tick inside frames
-does not satisfy the offset-verification prerequisite. Until that handshake
-is implemented and characterized on hardware, remote guidance remains
-fail-closed under the full proof model. Do not claim validated
-capture-to-guidance timing from the raw timestamp CSV.
+The experimental V3 firmware and Python UDP receiver now implement a
+nonce/session-bound four-timestamp challenge/response protected by AES-GCM.
+The receiver binds successful timing exchanges to the same source/session as
+AEAD-verified frame metadata, computes conservative clock-offset intervals,
+enforces synchronization expiry and drift limits, and gates only **descriptive
+obstacle warnings** after perception inference. This optional experimental
+path requires physical interoperation tests and independently validated clock
+behavior before its bounds can be treated as deployment guarantees.
+It does NOT release calibrated move/turn/path directives.
+
+
+## Experimental on-wire activation (both devices must match)
+
+Firmware compile: `-DWVAB_CAPTURE_METADATA_V3=1`.
+
+Server environment:
+
+```bash
+export WVAB_UDP_AUTH=1
+export WVAB_UDP_ENCRYPT=1
+export WVAB_RESEARCH_CAPTURE_METADATA_V3=1
+export WVAB_RESEARCH_REMOTE_CEVG_ENABLED=1
+export WVAB_RESEARCH_REMOTE_CEVG_MAX_AGE_S=0.5
+export WVAB_RESEARCH_REMOTE_CEVG_MIN_CONFIDENCE=0.5
+export WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH=evidence/esp32_capture.csv
+python udp_streaming.py server --headless
+```
+
+Production server mode remains unchanged by default. Research mode rejects
+unauthenticated/unencrypted UDP and requires the V3 metadata setting.
+
+Clock request: control header with AUTH_FRAME_ID, total_chunks=0,
+chunk_index=1, AEAD-GCM plaintext containing version, random 16-byte
+challenge and R1 receiver monotonic tick. Device response: chunk_index=2,
+same session and challenge, echoed R1, S2 receive tick, S3 response tick.
+AEAD AAD binds the full 14-byte header; the receiver checks exact
+challenge and session, rejects replays and inconsistent clock intervals.
+Sender tick comes from ESP32 uptime, receiver tick from Python monotonic clock.
+All offsets are conservative; synchronization drift budget is a configurable
+research assumption, **not yet a calibrated oscillator measurement**.
+
+The gate is applied just before obstacle speech scheduling, after detection.
+No path directive or user-facing mobility safety claim follows from an
+authenticated descriptive warning. Queued TTS may introduce additional
+delivery delay; the current trace measures inference/decision processing but
+not acoustic completion.
+
+### Remaining mandatory physical evidence
+
+Even with the working source-level handshake, a green cross-compile and unit
+test cannot prove that a real ESP32 board processes every sync packet correctly
+over Wi-Fi, that clock offsets remain bounded on actual hardware, or that
+warning accuracy improves. Collect actual ESP32 + Raspberry Pi traces,
+independently calibrated timing references, fault-injection conditions,
+direction-specific ground truth and real audio-delivery timing.
