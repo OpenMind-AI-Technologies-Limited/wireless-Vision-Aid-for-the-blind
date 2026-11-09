@@ -570,9 +570,8 @@ class UDPVisionServer:
     def _retire_session(self, addr, session_id):
         self._remember_bounded(self.retired_sessions, (addr, session_id), MAX_RETIRED_SESSIONS)
         self.last_completed_frame.pop((addr, session_id), None)
-        self.sync_pending.pop((addr, session_id), None)
-        self.sync_exchanges.pop((addr, session_id), None)
-        self.sync_last_request.pop((addr, session_id), None)
+        for table_name in ("sync_pending", "sync_exchanges", "sync_last_request"):
+            getattr(self, table_name, {}).pop((addr, session_id), None)
 
     def _bind_session(self, addr, session_id, now):
         current = self.sessions.get(addr)
