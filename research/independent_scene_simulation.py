@@ -10,6 +10,10 @@ import random
 import statistics
 from pathlib import Path
 
+from core.evidence_gate import GateConfig
+from core.remote_capture_proof import CaptureProof
+from core.remote_guidance_release import release_remote_obstacle_warning
+
 
 def bearing(x):
     if x < -0.45:
@@ -52,16 +56,30 @@ def simulate(seed, n, scenario, max_age=0.5, score_threshold=0.5):
         )
         verified_clock = rng.random() < 0.965
         clock_bound_error = rng.uniform(0.002, 0.055)
+        # Exercise the ACTUAL experimental warning-release implementation.
+        # Synthetic clock offset is zero; its verified lower bound is negative
+        # by the independently drawn uncertainty interval.
+        capture_proof = CaptureProof(
+            sender_capture_s=100.0,
+            receiver_decision_s=100.0 + true_age,
+            offset_lower_s=-clock_bound_error,
+            offset_upper_s=0.0,
+            trusted_clock_mapping=True,
+            authenticated_frame=True,
+            matched_session_and_frame=True,
+        ) if verified_clock else None
+        proposed_issued = release_remote_obstacle_warning(
+            capture_proof,
+            confidence=confidence,
+            config=GateConfig(max_age_s=max_age, min_confidence=score_threshold),
+        ).action == "GUIDE"
         predicted = {
             "confidence": detected and confidence >= score_threshold,
             "receiver_fresh": (
                 detected and confidence >= score_threshold
                 and processing_delay <= max_age
             ),
-            "capture_bound": (
-                detected and confidence >= score_threshold and verified_clock
-                and true_age + clock_bound_error <= max_age
-            ),
+            "capture_bound": bool(detected and proposed_issued),
         }
         for key in names:
             issued = predicted[key]
