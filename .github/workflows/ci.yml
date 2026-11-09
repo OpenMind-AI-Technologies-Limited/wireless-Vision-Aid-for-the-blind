@@ -62,6 +62,7 @@ jobs:
               "core/navigation_cevg_adapter.py",
               "core/remote_capture_proof.py",
               "core/remote_guidance_release.py",
+              "core/udp_clock_wire.py",
               "core/decision_recorder.py",
               "core/capture_metadata.py",
               "core/clock_offset_bounds.py",
