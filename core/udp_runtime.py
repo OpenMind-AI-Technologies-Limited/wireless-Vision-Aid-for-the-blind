@@ -27,6 +27,7 @@ from core.font_paths import overlay_font_candidates
 from core.proximity import classify_bbox_proximity
 from core.capture_metadata import extract_capture_envelope
 from core.udp_capture_trace import write_capture_trace
+from core.audio_timing_trace import record_tts_timing
 from core.evidence_gate import GateConfig
 from core.remote_guidance_release import release_remote_guidance, release_remote_obstacle_warning
 from core.clock_offset_bounds import FourTimestampExchange, infer_offset_interval
@@ -342,6 +343,8 @@ class UDPVisionServer:
         self.capture_metadata_v3 = _bool_env("WVAB_RESEARCH_CAPTURE_METADATA_V3", "0")
         self.last_capture_tick_us = None
         self.capture_trace_path = os.environ.get("WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH", "").strip()
+        self.audio_trace_path = os.environ.get("WVAB_RESEARCH_TTS_TIMING_TRACE_PATH", "").strip()
+        self._current_capture_context = None
         self.remote_cevg_enabled = _bool_env("WVAB_RESEARCH_REMOTE_CEVG_ENABLED", "0")
         self.remote_cevg_config = GateConfig(
             max_age_s=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MAX_AGE_S", "0.5")),
@@ -526,21 +529,36 @@ class UDPVisionServer:
         stale_s = float(os.environ.get("WVAB_UDP_TTS_STALE_MS", "700")) / 1000.0
         while not self.tts_stop.is_set():
             try:
-                text, created = self.speech_queue.get(timeout=0.2)
+                text, created, context = self.speech_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             if stale_s > 0 and time.monotonic() - created > stale_s:
                 continue
             try:
+                tts_started = time.monotonic()
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
+                tts_finished = time.monotonic()
+                if self.audio_trace_path and context is not None:
+                    try:
+                        session_id, frame_id, capture_us = context
+                        record_tts_timing(
+                            self.audio_trace_path,
+                            session_id=session_id, frame_id=frame_id,
+                            sender_capture_tick_us=capture_us,
+                            enqueue_receiver_monotonic_s=created,
+                            tts_start_monotonic_s=tts_started,
+                            tts_engine_return_monotonic_s=tts_finished,
+                        )
+                    except (OSError, ValueError) as exc:
+                        self.logger.warning("TTS trace unavailable: %s", type(exc).__name__)
             except Exception:
                 self.logger.exception("TTS error")
 
     def _speak(self, text):
         if not self.enable_tts:
             return
-        payload = (text, time.monotonic())
+        payload = (text, time.monotonic(), self._current_capture_context)
         try:
             self.speech_queue.put_nowait(payload)
         except queue.Full:
@@ -1127,9 +1145,13 @@ class UDPVisionServer:
                             speech_permission = lambda confidence: self._evaluate_remote_warning(
                                 addr, session_id, frame_id, sender_tick_us, confidence
                             )
-                        processed = self._process_frame(
-                            frame, speech_permission=speech_permission
-                        )
+                        self._current_capture_context = (session_id, frame_id, sender_tick_us)
+                        try:
+                            processed = self._process_frame(
+                                frame, speech_permission=speech_permission
+                            )
+                        finally:
+                            self._current_capture_context = None
                         if sender_tick_us is not None and self.capture_trace_path:
                             try:
                                 write_capture_trace(
