@@ -222,3 +222,24 @@ over Wi-Fi, that clock offsets remain bounded on actual hardware, or that
 warning accuracy improves. Collect actual ESP32 + Raspberry Pi traces,
 independently calibrated timing references, fault-injection conditions,
 direction-specific ground truth and real audio-delivery timing.
+
+
+## Frame-to-TTS engine timing instrumentation
+
+With `WVAB_RESEARCH_TTS_TIMING_TRACE_PATH=evidence/esp32_tts.csv`,
+the UDP vision receiver logs **per-frame** session/frame ID, authenticated
+sender capture tick (when V3 is enabled), receiver speech queue entry,
+synthesis start and time when `pyttsx3.runAndWait()` returns. The queue
+retains session/frame identity across the asynchronous worker boundary,
+including replacement of older queued warning messages.
+
+These are **TTS engine timestamps**, not acoustic playback-completion proof.
+The time of a sound arriving at a user's ear requires a microphone/audio
+loopback measurement with synchronized clocks. End-to-end camera
+exposure-to-physical-audio claims remain unavailable until that calibration
+is performed.
+
+When `WVAB_RESEARCH_REMOTE_CEVG_ENABLED=1`, the speech release gate
+requires a valid authenticated sender-clock exchange and bounded capture
+age before enqueuing a descriptive obstacle warning. It does not authorize
+calibrated route/movement guidance.
