@@ -100,3 +100,27 @@ physical-device performance, user outcome superiority, or general novelty.
 and a testable cross-layer hypothesis now exist, but a convincing original
 research contribution still needs comparison against strong alternatives,
 sensitivity analysis, independent data, and validated timing assumptions.
+
+
+## Executed age/confidence threshold sensitivity
+
+Reproduce 72 simulator-policy configurations with
+`python -m research.sensitivity_grid --runs 10 --frames 1000 --out sensitivity_results.csv`.
+The sweep covers 3 scenarios × 4 capture-age thresholds × 3 detector-score
+thresholds × 2 policies, with 10 independent seeded runs per setting.
+
+At score threshold 0.5 in the **burst** scenario, the capture-bound policy
+produced the following simulated safety–availability outcomes:
+
+| Capture age limit | Unsupported / issued | Valid warning recall | Abstention |
+|---|---:|---:|---:|
+| 0.25 s | 11.92% | 46.14% | 78.62% |
+| 0.50 s | 12.63% | 61.06% | 71.48% |
+| 0.75 s | 16.38% | 66.45% | 67.57% |
+| 1.00 s | 23.65% | 73.63% | 60.63% |
+
+This confirms that the chosen age budget is an influential experimental
+assumption, not a uniquely optimal or calibrated safety threshold.
+A tighter threshold reduces some unsupported warnings but discards many
+valid warnings. The sensitivity experiment is synthetic and independent
+of actual ESP32 Wi-Fi buffer dynamics, which still require measurement.
