@@ -10,9 +10,9 @@
 
 **Method:** We formulate an evidence-eligibility policy that admits actionable metric/directional guidance only if sender provenance, observation freshness, minimum detector confidence, localization validity, metric calibration, and path availability satisfy explicit gates. An opt-in implementation extends WVAB's existing navigation state policy and preserves the original policy as a baseline. We provide an authenticated camera-frame capture-tick envelope, conservative offset-interval models, run-level paired comparison and a protocol for independently annotated real-device trials.
 
-**Results:** Pending. Code-build and unit-test success must not be presented as measured navigation performance. The original architecture's empirical safety and availability have not yet been comparatively quantified. Do not insert simulated effect sizes as real results.
+**Results:** An independent dynamic-scene simulator was executed on three network-buffering regimes with 30 runs each. Under mixed buffering the capture-bound policy reduced unsupported issued warnings from 29.06% to 14.17%, but valid-warning recall dropped from 94.63% to 77.60%. Physical-device results remain pending. Do not insert simulated effect sizes as real results.
 
-**Conclusion:** Pending actual external evidence and comparison with published prior work.
+**Conclusion:** Within the defined simulator, verified capture-age gating changes the unsupported-warning/availability trade-off; independently calibrated hardware and user validation remain necessary.
 
 ## 1. Introduction
 
@@ -67,9 +67,28 @@ Primary outcomes: (i) unsupported issued/actionable guidance, (ii) valid-guidanc
 
 Statistical analysis: paired trial-level cluster bootstrap for headline rate differences with independent runs. Wilson intervals are descriptive and do not adjust for correlated frames. Thresholds, significance criteria, and minimum independent run counts must be preregistered with a justified power/sensitivity analysis before results are collected.
 
-## 6. Results
+## 6. Results — executed simulator, physical-device results pending
 
-**Not available.** Use only externally collected real trial data; do not use synthetic gate-consistency results as evidence of actual navigation safety or superiority.
+A motion-derived, policy-independent scene oracle was evaluated in
+`research/independent_scene_simulation.py` across 30 independent seeds,
+2,000 synthetic scenes per seed and three upstream-buffering scenarios
+(180,000 generated scenes; each evaluated with three policy alternatives).
+Detailed reproducible methods, scenario priors, and paired run-bootstrap
+intervals are in `research/EXECUTED_SIMULATION_RESULTS.md`.
+
+Under the mixed sender-queue-delay scenario, unsupported warnings per issued
+warning declined from 29.06% with receiver-age-only gating to 14.17%
+with capture-bound gating; valid-warning recall simultaneously declined
+from 94.63% to 77.60% and abstention increased. Under burst buffering,
+unsupported warnings decreased from 42.14% to 14.25%, but recall
+decreased from 94.48% to 60.98%. In nominal conditions there was almost
+no unsupported-issued fraction difference, despite recall loss.
+
+**Interpretation:** These data demonstrate a trade-off under the
+specified generative simulator. They are **not physical evidence** of
+ESP32/Raspberry Pi navigation safety or live camera/audio latency, and
+do not establish that the policy is globally novel. Real-device results
+and action-level annotations remain uncollected.
 
 Suggested tables (populate from measured artifacts):
 - T1: Hardware/software and link-condition settings.
