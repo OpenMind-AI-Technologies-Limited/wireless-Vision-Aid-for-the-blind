@@ -148,3 +148,26 @@ guidance and valid-guidance recall, not only abstention counts.
 5. Test with human participants only under an appropriate ethical and
    accessibility review protocol. Do not claim medical or mobility safety based
    on unit tests.
+
+
+## Conservative capture-age property
+
+Assume a verified four-timestamp exchange and independent clock analysis
+establish the true receiver-minus-sender monotonic offset `delta` within
+`[delta_lower, delta_upper]`, after a justified drift expansion.
+For sender capture tick `S` and receiver decision tick `R`, actual age is
+`A = R - (S + delta)`. Since `delta >= delta_lower`,
+`A <= R - (S + delta_lower) = A_upper`.
+Thus under the stated assumptions, if `A_upper <= tau`, the true
+capture-to-decision age does not exceed `tau`. This bound is arithmetic;
+it does **not** prove the hardware clock offset assumptions or that the
+camera observed the correct obstacle. The experimental suite property-tests
+5,000 independently sampled offset intervals and capture ages.
+
+A session-authenticated nonce-bound four-timestamp exchange and opt-in V3
+ESP32 source capture envelope are now implemented. The receiver applies
+this verified timing bound to **descriptive obstacle warnings** at the speech
+release boundary. These words identify obstacle direction; they are not
+calibrated navigation movement commands. Actual sender+receiver hardware
+interoperation, clock-drift validation, image timestamp provenance at sensor
+exposure, TTS playback timing and independent field outcomes remain pending.
