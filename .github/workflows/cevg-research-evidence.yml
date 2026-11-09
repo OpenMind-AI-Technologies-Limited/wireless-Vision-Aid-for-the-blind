@@ -1,0 +1,82 @@
+name: CEVG Simulation Evidence
+
+on:
+  push:
+    branches:
+      - research/cevg-evidence-valid-guidance
+    paths:
+      - research/independent_scene_simulation.py
+      - research/sensitivity_grid.py
+      - core/remote_guidance_release.py
+      - core/remote_capture_proof.py
+      - .github/workflows/cevg-research-evidence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  independent-simulation:
+    name: Reproducible independent-scene research simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate run-level research data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research-evidence
+          python -m research.independent_scene_simulation \
+            --runs 30 --frames 2000 --seed 20261109 \
+            --out research-evidence/independent_scene_runs.csv \
+            | tee research-evidence/simulation_stdout.txt
+          python -m research.sensitivity_grid \
+            --runs 10 --frames 1000 \
+            --out research-evidence/sensitivity_grid.csv \
+            | tee research-evidence/sensitivity_stdout.txt
+      - name: Generate hash-protected provenance manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, platform, subprocess
+          from pathlib import Path
+
+          paths = [
+              Path('research-evidence/independent_scene_runs.csv'),
+              Path('research-evidence/sensitivity_grid.csv'),
+          ]
+          manifest = {
+              'data_type': 'synthetic_motion_simulation_not_physical_hardware',
+              'git_commit': subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'python': platform.python_version(),
+              'simulation_parameters': {
+                  'runs': 30, 'frames_per_run': 2000,
+                  'seed': 20261109,
+                  'network_scenarios': ['nominal', 'mixed', 'burst'],
+              },
+              'sensitivity_parameters': {
+                  'runs': 10, 'frames_per_run': 1000,
+                  'age_thresholds_s': [0.25, 0.5, 0.75, 1.0],
+                  'confidence_thresholds': [0.4, 0.5, 0.6],
+              },
+              'files_sha256': {
+                  p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths
+              },
+          }
+          Path('research-evidence/manifest.json').write_text(
+              json.dumps(manifest, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+      - name: Upload reproducible simulation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cevg-independent-simulation-evidence
+          path: research-evidence/
+          if-no-files-found: error
+          retention-days: 90
