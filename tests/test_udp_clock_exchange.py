@@ -68,8 +68,8 @@ def authenticated_response(server, *, alter_challenge=False, alter_tag=False):
     if alter_challenge:
         challenge = bytes([challenge[0] ^ 1]) + challenge[1:]
 
-    s2 = r1 - 5_000_000 + 2_000
-    s3 = s2 + 100
+    s2 = r1 - 5_000_000
+    s3 = s2
     response_clear = encode_response(challenge, r1, s2, s3)
     response_header = pack_header(
         SESSION, AUTH_FRAME_ID, 0, 2, NONCE_SIZE + TAG_SIZE + len(response_clear)
@@ -80,7 +80,7 @@ def authenticated_response(server, *, alter_challenge=False, alter_tag=False):
     encrypted, response_tag = encoder.encrypt_and_digest(response_clear)
     if alter_tag:
         response_tag = bytes([response_tag[0] ^ 1]) + response_tag[1:]
-    arrival_us = time.monotonic_ns() // 1000 + 3_000
+    arrival_us = time.monotonic_ns() // 1000
     return response_header, response_nonce + response_tag + encrypted, arrival_us
 
 
