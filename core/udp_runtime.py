@@ -723,7 +723,7 @@ class UDPVisionServer:
         except ValueError:
             return False
         self.sync_exchanges[key] = exchange
-        if self.sync_trace_path:
+        if getattr(self, "sync_trace_path", ""):
             try:
                 write_sync_interval(
                     self.sync_trace_path,
