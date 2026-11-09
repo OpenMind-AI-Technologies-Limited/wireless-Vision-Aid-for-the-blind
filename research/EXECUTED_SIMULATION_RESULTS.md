@@ -124,3 +124,19 @@ assumption, not a uniquely optimal or calibrated safety threshold.
 A tighter threshold reduces some unsupported warnings but discards many
 valid warnings. The sensitivity experiment is synthetic and independent
 of actual ESP32 Wi-Fi buffer dynamics, which still require measurement.
+
+
+## Implementation-level replication
+
+The repository's `research/independent_scene_simulation.py` now calls
+`core.remote_guidance_release.release_remote_obstacle_warning` directly with
+the same seed-generated synthetic clock-offset bound and observation age,
+rather than using a separately handwritten proposed-policy condition.
+This makes simulator decisions traceable to the exact experimental gate.
+The independently computed motion/bearing oracle is unchanged.
+
+Previously executed local run-level CSV and figures were produced with the
+mathematically equivalent bound predicate. They remain labeled
+**synthetic preliminary evidence**. For strict final replication, regenerate
+the CSV on the current commit and compare per-run rows; only use the
+newly generated results as final-version results after verification.
