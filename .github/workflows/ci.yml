@@ -67,6 +67,7 @@ jobs:
               "core/capture_metadata.py",
               "core/clock_offset_bounds.py",
               "core/udp_capture_trace.py",
+              "core/audio_timing_trace.py",
               "core/udp_protocol.py",
               "core/udp_runtime.py",
               "mapping/occupancy_grid.py",
