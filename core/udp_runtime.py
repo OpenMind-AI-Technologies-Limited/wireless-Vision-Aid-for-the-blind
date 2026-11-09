@@ -27,6 +27,8 @@ from core.font_paths import overlay_font_candidates
 from core.proximity import classify_bbox_proximity
 from core.capture_metadata import extract_capture_envelope
 from core.udp_capture_trace import write_capture_trace
+from core.evidence_gate import GateConfig
+from core.remote_guidance_release import release_remote_guidance
 from core.security import normalize_control_host, resolve_control_token, verify_secret
 from core.udp_protocol import (
     AUTH_FRAME_ID,
@@ -334,6 +336,17 @@ class UDPVisionServer:
         self.capture_metadata_v3 = _bool_env("WVAB_RESEARCH_CAPTURE_METADATA_V3", "0")
         self.last_capture_tick_us = None
         self.capture_trace_path = os.environ.get("WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH", "").strip()
+        self.remote_cevg_enabled = _bool_env("WVAB_RESEARCH_REMOTE_CEVG_ENABLED", "0")
+        self.remote_cevg_config = GateConfig(
+            max_age_s=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MAX_AGE_S", "0.5")),
+            min_confidence=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MIN_CONFIDENCE", "0.5")),
+        ) if self.remote_cevg_enabled else None
+        self.remote_cevg_last_reason = "not_enabled"
+        if self.remote_cevg_enabled:
+            self.logger.warning(
+                "Research remote CEVG enabled: audio fail-closed until authenticated per-frame "
+                "capture proof and clock mapping are connected."
+            )
 
         self.model = YOLO(ensure_local_model(model_path, offline=OFFLINE_MODE))
         self.language = (language or "en").strip().lower()
@@ -762,7 +775,7 @@ class UDPVisionServer:
             return True
         return False
 
-    def _process_frame(self, frame):
+    def _process_frame(self, frame, *, allow_speech=True):
         started = time.monotonic()
         results = self.model(frame, verbose=False)
         detections = []
@@ -791,7 +804,7 @@ class UDPVisionServer:
             spoken_name = self._translate(class_name, self.speech_language)
             spoken_direction = self._phrase(direction_key, self.speech_language)
             announcement_key = f"{class_name}:{direction}:{track.get('id')}"
-            if self._should_announce(announcement_key):
+            if allow_speech and self._should_announce(announcement_key):
                 if proximity.label == "immediate":
                     message = f"Warning {spoken_name} {spoken_direction}"
                 elif proximity.label == "close":
@@ -966,7 +979,18 @@ class UDPVisionServer:
 
                         self.last_frame_mono = time.monotonic()
                         decode_completed_mono = self.last_frame_mono
-                        processed = self._process_frame(frame)
+                        allow_speech = True
+                        if self.remote_cevg_enabled:
+                            # A receiver timestamp is not authenticated capture age.
+                            # Until verified clock-sync and frame binding exist, abstain.
+                            release = release_remote_guidance(
+                                None, confidence=0.0, localization_fresh=False,
+                                metric_calibrated=False, path_available=False,
+                                config=self.remote_cevg_config,
+                            )
+                            self.remote_cevg_last_reason = release.reason
+                            allow_speech = release.action == "GUIDE"
+                        processed = self._process_frame(frame, allow_speech=allow_speech)
                         if sender_tick_us is not None and self.capture_trace_path:
                             try:
                                 write_capture_trace(
