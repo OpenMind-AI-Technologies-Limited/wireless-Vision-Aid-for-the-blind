@@ -28,6 +28,7 @@ from core.proximity import classify_bbox_proximity
 from core.capture_metadata import extract_capture_envelope
 from core.udp_capture_trace import write_capture_trace
 from core.audio_timing_trace import record_tts_timing
+from core.sync_interval_trace import write_sync_interval
 from core.evidence_gate import GateConfig
 from core.remote_guidance_release import release_remote_guidance, release_remote_obstacle_warning
 from core.clock_offset_bounds import FourTimestampExchange, infer_offset_interval
@@ -344,6 +345,7 @@ class UDPVisionServer:
         self.last_capture_tick_us = None
         self.capture_trace_path = os.environ.get("WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH", "").strip()
         self.audio_trace_path = os.environ.get("WVAB_RESEARCH_TTS_TIMING_TRACE_PATH", "").strip()
+        self.sync_trace_path = os.environ.get("WVAB_RESEARCH_SYNC_TRACE_PATH", "").strip()
         self._current_capture_context = None
         self.remote_cevg_enabled = _bool_env("WVAB_RESEARCH_REMOTE_CEVG_ENABLED", "0")
         self.remote_cevg_config = GateConfig(
@@ -717,10 +719,21 @@ class UDPVisionServer:
             same_nonce_and_session=True,
         )
         try:
-            infer_offset_interval(exchange)
+            interval = infer_offset_interval(exchange)
         except ValueError:
             return False
         self.sync_exchanges[key] = exchange
+        if self.sync_trace_path:
+            try:
+                write_sync_interval(
+                    self.sync_trace_path,
+                    session_id=session_id,
+                    receiver_reply_received_monotonic_s=exchange.receiver_reply_received_s,
+                    receiver_minus_sender_offset_lower_s=interval.lower_s,
+                    receiver_minus_sender_offset_upper_s=interval.upper_s,
+                )
+            except OSError as exc:
+                self.logger.warning("Sync trace unavailable: %s", type(exc).__name__)
         return True
 
     def _evaluate_remote_warning(self, addr, session_id, frame_id, capture_tick_us, confidence):
