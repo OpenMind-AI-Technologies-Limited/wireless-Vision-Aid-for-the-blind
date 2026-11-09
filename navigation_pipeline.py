@@ -14,6 +14,9 @@ from ultralytics import YOLO
 from core.config import load_config, validate_navigation_config
 from core.logger import setup_json_logger
 from core.safety import SafetyStatePublisher
+from core.evidence_gate import GateConfig
+from core.navigation_cevg_adapter import evaluate_local_navigation
+from core.decision_recorder import write_decision
 from mapping.occupancy_grid import OccupancyGrid
 from mapping.orbslam3_bridge import ORBSLAM3Bridge
 from mapping.slam import VisualOdometry
@@ -173,6 +176,22 @@ def main():
     last_frame_ok = time.time()
     last_metric_vo_scale = time.time()
     localization_stale_s = float(cfg["navigation"].get("localization_stale_s", 1.5))
+    cevg_enabled = _env_bool("WVAB_RESEARCH_CEVG_ENABLED", False)
+    cevg_config = GateConfig(
+        max_age_s=float(os.environ.get("WVAB_RESEARCH_CEVG_MAX_AGE_S", "0.5")),
+        min_confidence=float(os.environ.get("WVAB_RESEARCH_CEVG_MIN_CONFIDENCE", "0.5")),
+    ) if cevg_enabled else None
+    research_trace_path = os.environ.get("WVAB_RESEARCH_TRACE_PATH", "").strip()
+    research_run_id = os.environ.get("WVAB_RESEARCH_RUN_ID", "local_experiment")
+    if research_trace_path and (
+        not research_run_id or not all(
+            ch.isalnum() and ch.isascii() or ch in "_-" for ch in research_run_id
+        )
+    ):
+        raise ValueError("WVAB_RESEARCH_RUN_ID must contain only ASCII letters, digits, '_' and '-'")
+    frame_sequence = 0
+    if cevg_enabled:
+        logger.warning("Experimental CEVG enabled: local receiver-observation age only; not camera capture age")
 
     try:
         while not stop_event.is_set():
@@ -184,6 +203,8 @@ def main():
                 stop_event.wait(0.1)
                 continue
             last_frame_ok = time.time()
+            frame_read_monotonic = time.monotonic()
+            frame_sequence += 1
 
             t0 = time.time()
             results = model(frame, verbose=False)
@@ -267,7 +288,26 @@ def main():
                 "localization_fresh": localization_fresh,
                 "map_metric": map_is_metric,
             }
-            if not path:
+            if cevg_config is not None and path:
+                cevg_decision = evaluate_local_navigation(
+                    frame_read_monotonic=frame_read_monotonic,
+                    decision_monotonic=time.monotonic(),
+                    detections=detections,
+                    camera_source=cam_cfg["source"],
+                    localization_fresh=localization_fresh,
+                    metric_calibrated=bool(map_is_metric and localization_is_metric),
+                    path_available=True,
+                    config=cevg_config,
+                )
+                state_metadata["cevg_reason"] = cevg_decision.reason
+                state_metadata["cevg_age_s"] = cevg_decision.age_s
+                if cevg_decision.action == "GUIDE":
+                    safety.guidance(path_points=len(path), **state_metadata)
+                else:
+                    safety.degraded(
+                        "cevg_abstention", path_points=len(path), **state_metadata
+                    )
+            elif not path:
                 safety.stop("path_not_found", **state_metadata)
             elif map_is_metric and localization_is_metric and localization_fresh:
                 safety.guidance(path_points=len(path), **state_metadata)
@@ -277,6 +317,31 @@ def main():
                     path_points=len(path),
                     **state_metadata,
                 )
+
+            if research_trace_path:
+                legacy_guidance = bool(path and map_is_metric and localization_is_metric and localization_fresh)
+                proposed_action = (
+                    "GUIDE" if state_metadata.get("cevg_reason") == "evidence_valid"
+                    else "ABSTAIN" if cevg_enabled else "NOT_ENABLED"
+                )
+                research_row = {
+                    "run_id": research_run_id,
+                    "frame_number": frame_sequence,
+                    "frame_age_s": round(max(0.0, time.monotonic() - frame_read_monotonic), 6),
+                    "max_detection_confidence": max(
+                        (float(d["confidence"]) for d in detections), default=0.0
+                    ),
+                    "localization_fresh": bool(localization_fresh),
+                    "metric_calibrated": bool(map_is_metric and localization_is_metric),
+                    "path_available": bool(path),
+                    "existing_navigation_action": "GUIDE" if legacy_guidance else "ABSTAIN",
+                    "cevg_action": proposed_action,
+                    "cevg_reason": state_metadata.get("cevg_reason", "not_evaluated"),
+                }
+                try:
+                    write_decision(research_trace_path, research_row)
+                except OSError as exc:
+                    logger.warning("Research trace recording unavailable: %s", type(exc).__name__)
 
             frames += 1
             if time.time() - last_fps_ts >= 1.0:

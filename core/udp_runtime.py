@@ -25,6 +25,18 @@ import time
 
 from core.font_paths import overlay_font_candidates
 from core.proximity import classify_bbox_proximity
+from core.capture_metadata import extract_capture_envelope
+from core.udp_capture_trace import write_capture_trace
+from core.audio_timing_trace import record_tts_timing
+from core.sync_interval_trace import write_sync_interval
+from core.evidence_gate import GateConfig
+from core.remote_guidance_release import release_remote_guidance, release_remote_obstacle_warning
+from core.clock_offset_bounds import FourTimestampExchange, infer_offset_interval
+from core.remote_capture_proof import CaptureProof
+from core.udp_clock_wire import (
+    REQUEST_CHUNK_INDEX, RESPONSE_CHUNK_INDEX,
+    encode_request, decode_response,
+)
 from core.security import normalize_control_host, resolve_control_token, verify_secret
 from core.udp_protocol import (
     AUTH_FRAME_ID,
@@ -327,6 +339,34 @@ class UDPVisionServer:
         self.retired_sessions = OrderedDict()
         self.seen_auth_nonces = OrderedDict()
         self.last_completed_frame = {}
+        # Opt-in research frame metadata. Tick values are ESP32 uptime, not
+        # independently synchronized receiver capture-time estimates.
+        self.capture_metadata_v3 = _bool_env("WVAB_RESEARCH_CAPTURE_METADATA_V3", "0")
+        self.last_capture_tick_us = None
+        self.capture_trace_path = os.environ.get("WVAB_RESEARCH_UDP_CAPTURE_TRACE_PATH", "").strip()
+        self.audio_trace_path = os.environ.get("WVAB_RESEARCH_TTS_TIMING_TRACE_PATH", "").strip()
+        self.sync_trace_path = os.environ.get("WVAB_RESEARCH_SYNC_TRACE_PATH", "").strip()
+        self._current_capture_context = None
+        self.remote_cevg_enabled = _bool_env("WVAB_RESEARCH_REMOTE_CEVG_ENABLED", "0")
+        self.remote_cevg_config = GateConfig(
+            max_age_s=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MAX_AGE_S", "0.5")),
+            min_confidence=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MIN_CONFIDENCE", "0.5")),
+        ) if self.remote_cevg_enabled else None
+        self.remote_cevg_last_reason = "not_enabled"
+        self.sync_pending = {}
+        self.sync_exchanges = {}
+        self.sync_last_request = {}
+        if self.remote_cevg_enabled and (
+            not self.capture_metadata_v3 or not self.encrypt_udp or not self.require_auth
+        ):
+            raise RuntimeError(
+                "remote CEVG requires authenticated encrypted UDP with V3 capture metadata"
+            )
+        if self.remote_cevg_enabled:
+            self.logger.warning(
+                "Research remote CEVG enabled: audio fail-closed until authenticated per-frame "
+                "capture proof and clock mapping are connected."
+            )
 
         self.model = YOLO(ensure_local_model(model_path, offline=OFFLINE_MODE))
         self.language = (language or "en").strip().lower()
@@ -491,21 +531,36 @@ class UDPVisionServer:
         stale_s = float(os.environ.get("WVAB_UDP_TTS_STALE_MS", "700")) / 1000.0
         while not self.tts_stop.is_set():
             try:
-                text, created = self.speech_queue.get(timeout=0.2)
+                text, created, context = self.speech_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             if stale_s > 0 and time.monotonic() - created > stale_s:
                 continue
             try:
+                tts_started = time.monotonic()
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
+                tts_finished = time.monotonic()
+                if self.audio_trace_path and context is not None:
+                    try:
+                        session_id, frame_id, capture_us = context
+                        record_tts_timing(
+                            self.audio_trace_path,
+                            session_id=session_id, frame_id=frame_id,
+                            sender_capture_tick_us=capture_us,
+                            enqueue_receiver_monotonic_s=created,
+                            tts_start_monotonic_s=tts_started,
+                            tts_engine_return_monotonic_s=tts_finished,
+                        )
+                    except (OSError, ValueError) as exc:
+                        self.logger.warning("TTS trace unavailable: %s", type(exc).__name__)
             except Exception:
                 self.logger.exception("TTS error")
 
     def _speak(self, text):
         if not self.enable_tts:
             return
-        payload = (text, time.monotonic())
+        payload = (text, time.monotonic(), self._current_capture_context)
         try:
             self.speech_queue.put_nowait(payload)
         except queue.Full:
@@ -535,6 +590,8 @@ class UDPVisionServer:
     def _retire_session(self, addr, session_id):
         self._remember_bounded(self.retired_sessions, (addr, session_id), MAX_RETIRED_SESSIONS)
         self.last_completed_frame.pop((addr, session_id), None)
+        for table_name in ("sync_pending", "sync_exchanges", "sync_last_request"):
+            getattr(self, table_name, {}).pop((addr, session_id), None)
 
     def _bind_session(self, addr, session_id, now):
         current = self.sessions.get(addr)
@@ -599,6 +656,122 @@ class UDPVisionServer:
             self._remember_bounded(self.seen_auth_nonces, base_nonce, MAX_AUTH_NONCES)
         self.last_valid_packet_mono = now
         return True
+
+
+    def _send_clock_challenge(self, addr, session_id):
+        """Send nonce-bound AEAD clock query only to an authenticated session."""
+        if not self.remote_cevg_enabled or not self._is_authed(addr, session_id):
+            return False
+        key = (addr, session_id)
+        now = time.monotonic()
+        if now - self.sync_last_request.get(key, float("-inf")) < 1.5:
+            return False
+        challenge = secrets.token_bytes(16)
+        r1_us = time.monotonic_ns() // 1000
+        plaintext = encode_request(challenge, r1_us)
+        header = pack_header(
+            session_id, AUTH_FRAME_ID, 0, REQUEST_CHUNK_INDEX,
+            NONCE_SIZE + TAG_SIZE + len(plaintext),
+        )
+        nonce = self.get_random_bytes(NONCE_SIZE)
+        cipher = self.AES.new(self.udp_key, self.AES.MODE_GCM, nonce=nonce)
+        cipher.update(header)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+        try:
+            self.sock.sendto(header + nonce + tag + ciphertext, addr)
+        except OSError:
+            return False
+        self.sync_pending[key] = (challenge, r1_us, now)
+        self.sync_last_request[key] = now
+        return True
+
+    def _handle_clock_response(self, addr, session_id, header, payload, arrival_us):
+        """Accept a single verified nonce/session-bound response, never raw timing."""
+        key = (addr, session_id)
+        pending = self.sync_pending.get(key)
+        if pending is None or not self._is_authed(addr, session_id):
+            return False
+        challenge, r1_us, sent_mono = pending
+        if time.monotonic() - sent_mono > 1.0:
+            self.sync_pending.pop(key, None)
+            return False
+        if len(payload) <= NONCE_SIZE + TAG_SIZE:
+            return False
+        nonce = payload[:NONCE_SIZE]
+        tag = payload[NONCE_SIZE:NONCE_SIZE + TAG_SIZE]
+        ciphertext = payload[NONCE_SIZE+TAG_SIZE:]
+        try:
+            cipher = self.AES.new(self.udp_key, self.AES.MODE_GCM, nonce=nonce)
+            cipher.update(header)
+            clear = cipher.decrypt_and_verify(ciphertext, tag)
+            returned_challenge, returned_r1, s2_us, s3_us = decode_response(clear)
+        except Exception:
+            return False
+        if not hmac.compare_digest(returned_challenge, challenge) or returned_r1 != r1_us:
+            return False
+        self.sync_pending.pop(key, None)
+        exchange = FourTimestampExchange(
+            receiver_request_s=r1_us / 1e6,
+            sender_received_s=s2_us / 1e6,
+            sender_replied_s=s3_us / 1e6,
+            receiver_reply_received_s=arrival_us / 1e6,
+            authenticated_exchange=True,
+            same_nonce_and_session=True,
+        )
+        try:
+            interval = infer_offset_interval(exchange)
+        except ValueError:
+            return False
+        self.sync_exchanges[key] = exchange
+        if getattr(self, "sync_trace_path", ""):
+            try:
+                write_sync_interval(
+                    self.sync_trace_path,
+                    session_id=session_id,
+                    receiver_reply_received_monotonic_s=exchange.receiver_reply_received_s,
+                    receiver_minus_sender_offset_lower_s=interval.lower_s,
+                    receiver_minus_sender_offset_upper_s=interval.upper_s,
+                )
+            except OSError as exc:
+                self.logger.warning("Sync trace unavailable: %s", type(exc).__name__)
+        return True
+
+    def _evaluate_remote_warning(self, addr, session_id, frame_id, capture_tick_us, confidence):
+        """Release only descriptive hazard warnings, never path navigation."""
+        from core.remote_capture_proof import evaluate_remote_from_exchange
+        key = (addr, session_id)
+        exchange = self.sync_exchanges.get(key)
+        if capture_tick_us is None or exchange is None:
+            decision = release_remote_obstacle_warning(
+                None, confidence=confidence, config=self.remote_cevg_config
+            )
+            self.remote_cevg_last_reason = decision.reason
+            return False
+        # This proof is derived only from a successful AEAD challenge/response
+        # on this transport session and authenticated frame envelope.
+        from core.clock_offset_bounds import infer_offset_interval
+        try:
+            interval = infer_offset_interval(exchange)
+            sync_age = time.monotonic() - exchange.receiver_reply_received_s
+            if not 0 <= sync_age <= 5.0:
+                raise ValueError("sync interval expired")
+            drift_margin = sync_age * 50.0e-6
+            proof = CaptureProof(
+                sender_capture_s=capture_tick_us / 1e6,
+                receiver_decision_s=time.monotonic(),
+                offset_lower_s=interval.lower_s - drift_margin,
+                offset_upper_s=interval.upper_s + drift_margin,
+                trusted_clock_mapping=True,
+                authenticated_frame=True,
+                matched_session_and_frame=True,
+            )
+        except ValueError:
+            proof = None
+        decision = release_remote_obstacle_warning(
+            proof, confidence=confidence, config=self.remote_cevg_config
+        )
+        self.remote_cevg_last_reason = decision.reason
+        return decision.action == "GUIDE"
 
     def _cleanup_state(self, frame_buffers):
         now = time.monotonic()
@@ -755,7 +928,7 @@ class UDPVisionServer:
             return True
         return False
 
-    def _process_frame(self, frame):
+    def _process_frame(self, frame, *, allow_speech=True, speech_permission=None):
         started = time.monotonic()
         results = self.model(frame, verbose=False)
         detections = []
@@ -768,7 +941,16 @@ class UDPVisionServer:
                 class_name = self.model.names[class_id]
                 if not self.all_objects and class_name not in self.critical_objects:
                     continue
-                detections.append({"class_name": class_name, "bbox": box.xyxy[0].cpu().numpy()})
+                detections.append({"class_name": class_name, "bbox": box.xyxy[0].cpu().numpy(), "confidence": confidence})
+
+        if speech_permission is not None:
+            try:
+                # Detection-score surrogate; not calibrated warning correctness.
+                allow_speech = bool(speech_permission(max(
+                    (float(row["confidence"]) for row in detections), default=0.0
+                )))
+            except Exception:
+                allow_speech = False
 
         tracks = self.tracker.update(detections) if self.tracker else [
             {"id": None, "class_name": item["class_name"], "bbox": item["bbox"], "hits": 1}
@@ -784,7 +966,7 @@ class UDPVisionServer:
             spoken_name = self._translate(class_name, self.speech_language)
             spoken_direction = self._phrase(direction_key, self.speech_language)
             announcement_key = f"{class_name}:{direction}:{track.get('id')}"
-            if self._should_announce(announcement_key):
+            if allow_speech and self._should_announce(announcement_key):
                 if proximity.label == "immediate":
                     message = f"Warning {spoken_name} {spoken_direction}"
                 elif proximity.label == "close":
@@ -855,6 +1037,7 @@ class UDPVisionServer:
                 packet = addr = None
                 try:
                     packet, addr = self.sock.recvfrom(65536)
+                    packet_received_us = time.monotonic_ns() // 1000
                 except socket.timeout:
                     pass
 
@@ -876,6 +1059,17 @@ class UDPVisionServer:
                                     for stale_key in list(frame_buffers):
                                         if stale_key[0] == addr and stale_key[1] != session_id:
                                             frame_buffers.pop(stale_key, None)
+                                if self.remote_cevg_enabled:
+                                    self._send_clock_challenge(addr, session_id)
+                        continue
+
+                    if frame_id == AUTH_FRAME_ID and total_chunks == 0:
+                        if (self.remote_cevg_enabled and
+                            chunk_index == RESPONSE_CHUNK_INDEX and
+                            payload_size == len(payload)):
+                            self._handle_clock_response(
+                                addr, session_id, header, payload, packet_received_us
+                            )
                         continue
 
                     if not valid_frame_shape(total_chunks, chunk_index, payload_size, len(packet)):
@@ -926,7 +1120,21 @@ class UDPVisionServer:
                         except KeyError:
                             frame_buffers.pop(key, None)
                             continue
+
                         frame_buffers.pop(key, None)
+                        sender_tick_us = None
+                        if self.capture_metadata_v3:
+                            try:
+                                sender_tick_us, data = extract_capture_envelope(
+                                    data,
+                                    expected_session_id=session_id,
+                                    expected_frame_id=frame_id,
+                                )
+                            except ValueError:
+                                continue
+                            # Sender uptime is authenticated frame metadata,
+                            # NOT a synchronized end-to-end freshness proof.
+                            self.last_capture_tick_us = sender_tick_us
                         self.last_completed_frame[replay_key] = frame_id
                         for stale_key in list(frame_buffers):
                             if (
@@ -942,8 +1150,35 @@ class UDPVisionServer:
                         )
                         if frame is None:
                             continue
+
                         self.last_frame_mono = time.monotonic()
-                        processed = self._process_frame(frame)
+                        decode_completed_mono = self.last_frame_mono
+                        speech_permission = None
+                        if self.remote_cevg_enabled:
+                            speech_permission = lambda confidence: self._evaluate_remote_warning(
+                                addr, session_id, frame_id, sender_tick_us, confidence
+                            )
+                        self._current_capture_context = (session_id, frame_id, sender_tick_us)
+                        try:
+                            processed = self._process_frame(
+                                frame, speech_permission=speech_permission
+                            )
+                        finally:
+                            self._current_capture_context = None
+                        if sender_tick_us is not None and self.capture_trace_path:
+                            try:
+                                write_capture_trace(
+                                    self.capture_trace_path,
+                                    session_id=session_id,
+                                    frame_id=frame_id,
+                                    sender_capture_uptime_us=sender_tick_us,
+                                    receiver_decode_monotonic_s=decode_completed_mono,
+                                    receiver_processing_end_monotonic_s=time.monotonic(),
+                                )
+                            except OSError as exc:
+                                self.logger.warning(
+                                    "Remote capture trace unavailable: %s", type(exc).__name__
+                                )
                         self.frame_count += 1
                         now = time.monotonic()
                         recent_frame_times.append(now)
@@ -962,6 +1197,9 @@ class UDPVisionServer:
                                 stop_event.set()
 
                 now = time.monotonic()
+                if self.remote_cevg_enabled:
+                    for source_addr, session in tuple(self.sessions.items()):
+                        self._send_clock_challenge(source_addr, session["session_id"])
                 if now - last_cleanup >= 1.0:
                     self._cleanup_state(frame_buffers)
                     last_cleanup = now

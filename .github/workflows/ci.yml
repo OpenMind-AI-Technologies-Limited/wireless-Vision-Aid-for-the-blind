@@ -58,6 +58,17 @@ jobs:
               "core/config.py",
               "core/object_policy.py",
               "core/udp_auth_state.py",
+              "core/evidence_gate.py",
+              "core/navigation_cevg_adapter.py",
+              "core/remote_capture_proof.py",
+              "core/remote_guidance_release.py",
+              "core/udp_clock_wire.py",
+              "core/decision_recorder.py",
+              "core/capture_metadata.py",
+              "core/clock_offset_bounds.py",
+              "core/udp_capture_trace.py",
+              "core/audio_timing_trace.py",
+              "core/sync_interval_trace.py",
               "core/udp_protocol.py",
               "core/udp_runtime.py",
               "mapping/occupancy_grid.py",
@@ -134,8 +145,10 @@ jobs:
               r"mbedtls_gcm_crypt_and_tag\([\s\S]*?header,\s*HEADER_SIZE,",
               source,
           )
-          if len(calls) != 2:
-              raise SystemExit("ESP32 auth/frame encryption must authenticate the UDP header as GCM AAD")
+          if len(calls) != 3:
+              raise SystemExit("ESP32 auth/frame/sync encryption must authenticate UDP headers as GCM AAD")
+          if "mbedtls_gcm_auth_decrypt(" not in source or "respond_to_clock_challenge()" not in source:
+              raise SystemExit("experimental clock sync must authenticate the request")
           required = (
               "const uint16_t HEADER_SIZE = 14;",
               "const uint8_t AUTH_PAYLOAD_VERSION = 2;",
@@ -253,3 +266,10 @@ jobs:
 
       - name: Compile ESP32-CAM firmware
         run: arduino-cli compile --fqbn esp32:esp32:esp32:PSRAM=enabled build-sketch/esp32_cam_stream
+
+      - name: Compile experimental ESP32-CAM capture metadata mode
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32:PSRAM=enabled \
+            --build-property "compiler.cpp.extra_flags=-DWVAB_CAPTURE_METADATA_V3=1" \
+            build-sketch/esp32_cam_stream
