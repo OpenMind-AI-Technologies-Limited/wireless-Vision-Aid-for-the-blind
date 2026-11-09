@@ -339,7 +339,8 @@ static void respond_to_clock_challenge() {
   const int count = udp.read(packet, static_cast<size_t>(available));
   const uint64_t s2_us = static_cast<uint64_t>(esp_timer_get_time());
   if (count != available || count < HEADER_SIZE + NONCE_SIZE + TAG_SIZE + 25) return;
-  if (udp.remoteIP().toString() != String(WVAB_UDP_HOST)) return;
+  // Authenticated AES-GCM header/session/challenge validates the peer;
+  // WVAB_UDP_HOST may be DNS, so string-equality against remoteIP is invalid.
   auto read_u16 = [](const uint8_t* src) -> uint16_t {
     return (uint16_t(src[0]) << 8) | uint16_t(src[1]);
   };
