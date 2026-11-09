@@ -898,7 +898,7 @@ class UDPVisionServer:
             return True
         return False
 
-    def _process_frame(self, frame, *, allow_speech=True):
+    def _process_frame(self, frame, *, allow_speech=True, speech_permission=None):
         started = time.monotonic()
         results = self.model(frame, verbose=False)
         detections = []
@@ -911,7 +911,16 @@ class UDPVisionServer:
                 class_name = self.model.names[class_id]
                 if not self.all_objects and class_name not in self.critical_objects:
                     continue
-                detections.append({"class_name": class_name, "bbox": box.xyxy[0].cpu().numpy()})
+                detections.append({"class_name": class_name, "bbox": box.xyxy[0].cpu().numpy(), "confidence": confidence})
+
+        if speech_permission is not None:
+            try:
+                # Detection-score surrogate; not calibrated warning correctness.
+                allow_speech = bool(speech_permission(max(
+                    (float(row["confidence"]) for row in detections), default=0.0
+                )))
+            except Exception:
+                allow_speech = False
 
         tracks = self.tracker.update(detections) if self.tracker else [
             {"id": None, "class_name": item["class_name"], "bbox": item["bbox"], "hits": 1}
@@ -998,6 +1007,7 @@ class UDPVisionServer:
                 packet = addr = None
                 try:
                     packet, addr = self.sock.recvfrom(65536)
+                    packet_received_us = time.monotonic_ns() // 1000
                 except socket.timeout:
                     pass
 
@@ -1019,6 +1029,17 @@ class UDPVisionServer:
                                     for stale_key in list(frame_buffers):
                                         if stale_key[0] == addr and stale_key[1] != session_id:
                                             frame_buffers.pop(stale_key, None)
+                                if self.remote_cevg_enabled:
+                                    self._send_clock_challenge(addr, session_id)
+                        continue
+
+                    if frame_id == AUTH_FRAME_ID and total_chunks == 0:
+                        if (self.remote_cevg_enabled and
+                            chunk_index == RESPONSE_CHUNK_INDEX and
+                            payload_size == len(payload)):
+                            self._handle_clock_response(
+                                addr, session_id, header, payload, packet_received_us
+                            )
                         continue
 
                     if not valid_frame_shape(total_chunks, chunk_index, payload_size, len(packet)):
@@ -1102,18 +1123,14 @@ class UDPVisionServer:
 
                         self.last_frame_mono = time.monotonic()
                         decode_completed_mono = self.last_frame_mono
-                        allow_speech = True
+                        speech_permission = None
                         if self.remote_cevg_enabled:
-                            # A receiver timestamp is not authenticated capture age.
-                            # Until verified clock-sync and frame binding exist, abstain.
-                            release = release_remote_guidance(
-                                None, confidence=0.0, localization_fresh=False,
-                                metric_calibrated=False, path_available=False,
-                                config=self.remote_cevg_config,
+                            speech_permission = lambda confidence: self._evaluate_remote_warning(
+                                addr, session_id, frame_id, sender_tick_us, confidence
                             )
-                            self.remote_cevg_last_reason = release.reason
-                            allow_speech = release.action == "GUIDE"
-                        processed = self._process_frame(frame, allow_speech=allow_speech)
+                        processed = self._process_frame(
+                            frame, speech_permission=speech_permission
+                        )
                         if sender_tick_us is not None and self.capture_trace_path:
                             try:
                                 write_capture_trace(
@@ -1146,6 +1163,9 @@ class UDPVisionServer:
                                 stop_event.set()
 
                 now = time.monotonic()
+                if self.remote_cevg_enabled:
+                    for source_addr, session in tuple(self.sessions.items()):
+                        self._send_clock_challenge(source_addr, session["session_id"])
                 if now - last_cleanup >= 1.0:
                     self._cleanup_state(frame_buffers)
                     last_cleanup = now
