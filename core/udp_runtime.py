@@ -28,7 +28,13 @@ from core.proximity import classify_bbox_proximity
 from core.capture_metadata import extract_capture_envelope
 from core.udp_capture_trace import write_capture_trace
 from core.evidence_gate import GateConfig
-from core.remote_guidance_release import release_remote_guidance
+from core.remote_guidance_release import release_remote_guidance, release_remote_obstacle_warning
+from core.clock_offset_bounds import FourTimestampExchange, infer_offset_interval
+from core.remote_capture_proof import CaptureProof
+from core.udp_clock_wire import (
+    REQUEST_CHUNK_INDEX, RESPONSE_CHUNK_INDEX,
+    encode_request, decode_response,
+)
 from core.security import normalize_control_host, resolve_control_token, verify_secret
 from core.udp_protocol import (
     AUTH_FRAME_ID,
@@ -342,6 +348,15 @@ class UDPVisionServer:
             min_confidence=float(os.environ.get("WVAB_RESEARCH_REMOTE_CEVG_MIN_CONFIDENCE", "0.5")),
         ) if self.remote_cevg_enabled else None
         self.remote_cevg_last_reason = "not_enabled"
+        self.sync_pending = {}
+        self.sync_exchanges = {}
+        self.sync_last_request = {}
+        if self.remote_cevg_enabled and (
+            not self.capture_metadata_v3 or not self.encrypt_udp or not self.require_auth
+        ):
+            raise RuntimeError(
+                "remote CEVG requires authenticated encrypted UDP with V3 capture metadata"
+            )
         if self.remote_cevg_enabled:
             self.logger.warning(
                 "Research remote CEVG enabled: audio fail-closed until authenticated per-frame "
@@ -555,6 +570,9 @@ class UDPVisionServer:
     def _retire_session(self, addr, session_id):
         self._remember_bounded(self.retired_sessions, (addr, session_id), MAX_RETIRED_SESSIONS)
         self.last_completed_frame.pop((addr, session_id), None)
+        self.sync_pending.pop((addr, session_id), None)
+        self.sync_exchanges.pop((addr, session_id), None)
+        self.sync_last_request.pop((addr, session_id), None)
 
     def _bind_session(self, addr, session_id, now):
         current = self.sessions.get(addr)
@@ -619,6 +637,111 @@ class UDPVisionServer:
             self._remember_bounded(self.seen_auth_nonces, base_nonce, MAX_AUTH_NONCES)
         self.last_valid_packet_mono = now
         return True
+
+
+    def _send_clock_challenge(self, addr, session_id):
+        """Send nonce-bound AEAD clock query only to an authenticated session."""
+        if not self.remote_cevg_enabled or not self._is_authed(addr, session_id):
+            return False
+        key = (addr, session_id)
+        now = time.monotonic()
+        if now - self.sync_last_request.get(key, float("-inf")) < 1.5:
+            return False
+        challenge = secrets.token_bytes(16)
+        r1_us = time.monotonic_ns() // 1000
+        plaintext = encode_request(challenge, r1_us)
+        header = pack_header(
+            session_id, AUTH_FRAME_ID, 0, REQUEST_CHUNK_INDEX,
+            NONCE_SIZE + TAG_SIZE + len(plaintext),
+        )
+        nonce = self.get_random_bytes(NONCE_SIZE)
+        cipher = self.AES.new(self.udp_key, self.AES.MODE_GCM, nonce=nonce)
+        cipher.update(header)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+        try:
+            self.sock.sendto(header + nonce + tag + ciphertext, addr)
+        except OSError:
+            return False
+        self.sync_pending[key] = (challenge, r1_us, now)
+        self.sync_last_request[key] = now
+        return True
+
+    def _handle_clock_response(self, addr, session_id, header, payload, arrival_us):
+        """Accept a single verified nonce/session-bound response, never raw timing."""
+        key = (addr, session_id)
+        pending = self.sync_pending.get(key)
+        if pending is None or not self._is_authed(addr, session_id):
+            return False
+        challenge, r1_us, sent_mono = pending
+        if time.monotonic() - sent_mono > 1.0:
+            self.sync_pending.pop(key, None)
+            return False
+        if len(payload) <= NONCE_SIZE + TAG_SIZE:
+            return False
+        nonce = payload[:NONCE_SIZE]
+        tag = payload[NONCE_SIZE:NONCE_SIZE + TAG_SIZE]
+        ciphertext = payload[NONCE_SIZE+TAG_SIZE:]
+        try:
+            cipher = self.AES.new(self.udp_key, self.AES.MODE_GCM, nonce=nonce)
+            cipher.update(header)
+            clear = cipher.decrypt_and_verify(ciphertext, tag)
+            returned_challenge, returned_r1, s2_us, s3_us = decode_response(clear)
+        except Exception:
+            return False
+        if not hmac.compare_digest(returned_challenge, challenge) or returned_r1 != r1_us:
+            return False
+        self.sync_pending.pop(key, None)
+        exchange = FourTimestampExchange(
+            receiver_request_s=r1_us / 1e6,
+            sender_received_s=s2_us / 1e6,
+            sender_replied_s=s3_us / 1e6,
+            receiver_reply_received_s=arrival_us / 1e6,
+            authenticated_exchange=True,
+            same_nonce_and_session=True,
+        )
+        try:
+            infer_offset_interval(exchange)
+        except ValueError:
+            return False
+        self.sync_exchanges[key] = exchange
+        return True
+
+    def _evaluate_remote_warning(self, addr, session_id, frame_id, capture_tick_us, confidence):
+        """Release only descriptive hazard warnings, never path navigation."""
+        from core.remote_capture_proof import evaluate_remote_from_exchange
+        key = (addr, session_id)
+        exchange = self.sync_exchanges.get(key)
+        if capture_tick_us is None or exchange is None:
+            decision = release_remote_obstacle_warning(
+                None, confidence=confidence, config=self.remote_cevg_config
+            )
+            self.remote_cevg_last_reason = decision.reason
+            return False
+        # This proof is derived only from a successful AEAD challenge/response
+        # on this transport session and authenticated frame envelope.
+        from core.clock_offset_bounds import infer_offset_interval
+        try:
+            interval = infer_offset_interval(exchange)
+            sync_age = time.monotonic() - exchange.receiver_reply_received_s
+            if not 0 <= sync_age <= 5.0:
+                raise ValueError("sync interval expired")
+            drift_margin = sync_age * 50.0e-6
+            proof = CaptureProof(
+                sender_capture_s=capture_tick_us / 1e6,
+                receiver_decision_s=time.monotonic(),
+                offset_lower_s=interval.lower_s - drift_margin,
+                offset_upper_s=interval.upper_s + drift_margin,
+                trusted_clock_mapping=True,
+                authenticated_frame=True,
+                matched_session_and_frame=True,
+            )
+        except ValueError:
+            proof = None
+        decision = release_remote_obstacle_warning(
+            proof, confidence=confidence, config=self.remote_cevg_config
+        )
+        self.remote_cevg_last_reason = decision.reason
+        return decision.action == "GUIDE"
 
     def _cleanup_state(self, frame_buffers):
         now = time.monotonic()
