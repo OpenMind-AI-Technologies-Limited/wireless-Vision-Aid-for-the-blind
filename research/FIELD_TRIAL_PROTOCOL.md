@@ -243,3 +243,19 @@ When `WVAB_RESEARCH_REMOTE_CEVG_ENABLED=1`, the speech release gate
 requires a valid authenticated sender-clock exchange and bounded capture
 age before enqueuing a descriptive obstacle warning. It does not authorize
 calibrated route/movement guidance.
+
+
+## Capturing full clock-offset evidence
+
+Set `WVAB_RESEARCH_SYNC_TRACE_PATH=evidence/esp32_clock_bounds.csv`
+in addition to the frame and TTS paths. This logs each accepted AEAD
+challenge/response exchange with session ID, receiver response timestamp,
+offset interval bounds and uncertainty width. The output contains no
+AES key, token or synchronization nonce.
+
+Frame capture, offset and TTS traces must be joined by the exact authenticated
+session ID and observation timing; drift-expansion and expiry checks must be
+reapplied when computing each frame's conservative age upper bound.
+The resulting receiver-clock estimates remain conditional on true
+clock-model assumptions. Receiver engine return time is not a microphone
+measurement of sound delivery.
