@@ -61,6 +61,7 @@ jobs:
               "core/evidence_gate.py",
               "core/navigation_cevg_adapter.py",
               "core/remote_capture_proof.py",
+              "core/remote_guidance_release.py",
               "core/decision_recorder.py",
               "core/capture_metadata.py",
               "core/clock_offset_bounds.py",
